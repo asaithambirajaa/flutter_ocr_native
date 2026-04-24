@@ -1,0 +1,28 @@
+name: flutter_ocr_native
+description: "A Flutter plugin for extracting text from images using native on-device OCR. Android uses ML Kit, iOS uses Apple Vision. Supports Aadhaar masking, handwriting detection, and English-only text extraction."
+version: 0.0.2
+homepage: https://github.com/<your-username>/flutter_ocr_native
+repository: https://github.com/<your-username>/flutter_ocr_native
+issue_tracker: https://github.com/<your-username>/flutter_ocr_native/issues
+
+environment:
+  sdk: ">=3.6.0 <4.0.0"
+  flutter: ">=1.17.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+
+flutter:
+  plugin:
+    platforms:
+      android:
+        package: com.flutter_ocr_native
+        pluginClass: OcrPlugin
+      ios:
+        pluginClass: OcrPlugin
