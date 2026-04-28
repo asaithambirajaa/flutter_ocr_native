@@ -1,8 +1,9 @@
 import 'dart:io';
 
 import 'package:flutter/material.dart';
-import 'package:image_picker/image_picker.dart';
 import 'package:flutter_ocr_native/flutter_ocr_native.dart';
+import 'package:image_picker/image_picker.dart';
+import 'package:path_provider/path_provider.dart';
 
 void main() => runApp(const OcrExampleApp());
 
@@ -28,7 +29,7 @@ class OcrHomePage extends StatefulWidget {
 }
 
 class _OcrHomePageState extends State<OcrHomePage> {
-  final _reader = OcrReader();
+  final _reader = OcrReader(validateDocument: true, maskAadhaar: true);
   final _picker = ImagePicker();
 
   File? _imageFile;
@@ -46,22 +47,68 @@ class _OcrHomePageState extends State<OcrHomePage> {
       _error = null;
       _loading = true;
     });
-    final reader = OcrReader(validateDocument: true, maskAadhaar: true);
+
     try {
-      final result = await reader.readFromPath(picked.path);
+      final result = await _reader.readFromPath(picked.path);
       setState(() => _result = result);
-    } /* catch (e) {
-      setState(() => _error = e.toString());
-    }  */ on EmptyImageException {
-      setState(() => _error = "No text detected in the image");
+    } on EmptyImageException {
+      setState(() => _error = 'No text detected in the image');
     } on HandwrittenTextException {
-      setState(
-        () => _error =
-            "Handwritten text detected. Only printed documents are accepted",
-      );
+      setState(() => _error =
+          'Handwritten text detected. Only printed documents are accepted');
+    } catch (e) {
+      setState(() => _error = e.toString());
     } finally {
       setState(() => _loading = false);
     }
+  }
+
+  OcrWatermark get _watermark => const OcrWatermark(
+        lines: {
+          'Lead ID': 'LD-20250101-001',
+          'Lat': '12.9716',
+          'Long': '77.5946',
+          'Agent': 'Ram Kumar',
+          'Date': '2025-01-15 10:30',
+        },
+      );
+
+  Future<void> _saveImage() async {
+    if (_result == null || _imageFile == null) return;
+    final dir = await getApplicationDocumentsDirectory();
+    final file = await OcrDocumentSaver.saveFromPath(
+      result: _result!,
+      originalImagePath: _imageFile!.path,
+      directory: dir,
+      watermark: _watermark,
+    );
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Saved to ${file.path}')),
+      );
+    }
+  }
+
+  void _viewImage() {
+    if (_result == null) return;
+    OcrDocumentViewer.show(
+      context,
+      result: _result!,
+      originalFile: _imageFile,
+      title: _result!.hasAadhaar ? 'Masked Document' : 'Document',
+      watermark: _watermark,
+      onSave: (bytes) async {
+        final dir = await getApplicationDocumentsDirectory();
+        final file = File(
+            '${dir.path}/ocr_${DateTime.now().millisecondsSinceEpoch}.jpg');
+        await file.writeAsBytes(bytes);
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Saved to ${file.path}')),
+          );
+        }
+      },
+    );
   }
 
   @override
@@ -72,12 +119,13 @@ class _OcrHomePageState extends State<OcrHomePage> {
 
   @override
   Widget build(BuildContext context) {
+    final hasResult = _result != null;
+
     return Scaffold(
       appBar: AppBar(title: const Text('OCR Reader')),
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
-          // Action buttons
           Row(
             children: [
               Expanded(
@@ -103,51 +151,73 @@ class _OcrHomePageState extends State<OcrHomePage> {
           ),
           const SizedBox(height: 16),
 
-          // Image preview — show masked image if Aadhaar detected, else original
-          if (_result != null && _result!.hasAadhaar)
-            ClipRRect(
-              borderRadius: BorderRadius.circular(12),
-              child: Image.memory(_result!.maskedImageBytes!, height: 250, fit: BoxFit.cover),
+          // Image preview
+          if (hasResult && _result!.hasAadhaar)
+            GestureDetector(
+              onTap: _viewImage,
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(12),
+                child: Image.memory(_result!.maskedImageBytes!,
+                    height: 250, width: double.infinity, fit: BoxFit.cover),
+              ),
             )
           else if (_imageFile != null)
-            ClipRRect(
-              borderRadius: BorderRadius.circular(12),
-              child: Image.file(_imageFile!, height: 250, fit: BoxFit.cover),
+            GestureDetector(
+              onTap: hasResult ? _viewImage : null,
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(12),
+                child: Image.file(_imageFile!,
+                    height: 250, width: double.infinity, fit: BoxFit.cover),
+              ),
             ),
+
+          if (hasResult && !_loading) ...[
+            const SizedBox(height: 12),
+            Row(
+              children: [
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: _viewImage,
+                    icon: const Icon(Icons.visibility),
+                    label: const Text('View'),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: _saveImage,
+                    icon: const Icon(Icons.save_alt),
+                    label: const Text('Download'),
+                  ),
+                ),
+              ],
+            ),
+          ],
 
           const SizedBox(height: 16),
 
-          // Loading
           if (_loading) const Center(child: CircularProgressIndicator()),
 
-          // Error
           if (_error != null)
             Card(
               color: Theme.of(context).colorScheme.errorContainer,
               child: Padding(
                 padding: const EdgeInsets.all(12),
-                child: Text(
-                  _error!,
-                  style: TextStyle(
-                    color: Theme.of(context).colorScheme.onErrorContainer,
-                  ),
-                ),
+                child: Text(_error!,
+                    style: TextStyle(
+                        color: Theme.of(context).colorScheme.onErrorContainer)),
               ),
             ),
 
-          // Results
-          if (_result != null) ...[
-            // Full text
+          if (hasResult) ...[
             Card(
               child: Padding(
                 padding: const EdgeInsets.all(12),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(
-                      'Extracted Text',
-                      style: Theme.of(context).textTheme.titleMedium,
-                    ),
+                    Text('Extracted Text',
+                        style: Theme.of(context).textTheme.titleMedium),
                     const Divider(),
                     SelectableText(
                       _result!.text.isEmpty ? 'No text found' : _result!.text,
@@ -158,32 +228,20 @@ class _OcrHomePageState extends State<OcrHomePage> {
               ),
             ),
             const SizedBox(height: 12),
-
-            // Structured blocks
-            Text(
-              '${_result!.blocks.length} block(s) found',
-              style: Theme.of(context).textTheme.titleSmall,
-            ),
-            const SizedBox(height: 8),
             ..._result!.blocks.asMap().entries.map((entry) {
               final i = entry.key;
               final block = entry.value;
               return Card(
                 child: ExpansionTile(
                   title: Text('Block ${i + 1}'),
-                  subtitle: Text(
-                    block.text,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                  ),
+                  subtitle: Text(block.text,
+                      maxLines: 1, overflow: TextOverflow.ellipsis),
                   children: block.lines.map((line) {
                     return ListTile(
                       dense: true,
                       title: Text(line.text),
                       subtitle: Text(
-                        'Confidence: ${((line.confidence ?? 0) * 100).toStringAsFixed(1)}%  •  '
-                        'Bounds: (${line.boundingBox.left.toInt()}, ${line.boundingBox.top.toInt()}, '
-                        '${line.boundingBox.width.toInt()}×${line.boundingBox.height.toInt()})',
+                        'Confidence: ${((line.confidence ?? 0) * 100).toStringAsFixed(1)}%',
                         style: Theme.of(context).textTheme.bodySmall,
                       ),
                     );
