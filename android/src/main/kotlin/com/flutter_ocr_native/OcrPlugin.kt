@@ -74,11 +74,7 @@ class OcrPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
             "burnWatermark" -> {
                 val bytes = call.argument<ByteArray>("imageBytes")
                 val lines = call.argument<Map<String, String>>("lines")
-                val fontSize = call.argument<Double>("fontSize") ?: 28.0
-                val textColor = call.argument<Long>("textColor") ?: 0xCCFFFFFFL
-                val bgColor = call.argument<Long>("bgColor") ?: 0xB3000000L
-                val padH = call.argument<Double>("padH") ?: 24.0
-                val padV = call.argument<Double>("padV") ?: 16.0
+                val quality = call.argument<Int>("quality") ?: 90
 
                 if (bytes == null || lines == null || lines.isEmpty()) {
                     result.error("INVALID_ARG", "imageBytes and lines are required", null)
@@ -91,9 +87,28 @@ class OcrPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
                     return
                 }
 
-                val output = burnWatermarkOnBitmap(bitmap, lines, fontSize.toFloat(),
-                    textColor.toInt(), bgColor.toInt(), padH.toFloat(), padV.toFloat())
+                val output = burnWatermarkOnBitmap(bitmap, lines, quality)
                 result.success(output)
+            }
+            "compressImage" -> {
+                val bytes = call.argument<ByteArray>("imageBytes")
+                val quality = call.argument<Int>("quality") ?: 80
+
+                if (bytes == null) {
+                    result.error("INVALID_ARG", "imageBytes is required", null)
+                    return
+                }
+
+                val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                if (bitmap == null) {
+                    result.error("DECODE_ERROR", "Could not decode image bytes", null)
+                    return
+                }
+
+                val stream = ByteArrayOutputStream()
+                bitmap.compress(Bitmap.CompressFormat.JPEG, quality, stream)
+                bitmap.recycle()
+                result.success(stream.toByteArray())
             }
             "dispose" -> {
                 recognizer?.close()
@@ -343,13 +358,8 @@ class OcrPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
     private fun burnWatermarkOnBitmap(
         bitmap: Bitmap,
         lines: Map<String, String>,
-        fontSize: Float,
-        textColor: Int,
-        bgColor: Int,
-        padH: Float,
-        padV: Float
+        quality: Int
     ): ByteArray {
-        // Auto-scale: font size = ~3% of image width, minimum 36px
         val scaledFontSize = maxOf(bitmap.width * 0.03f, 36f)
         val scaledPadH = bitmap.width * 0.02f
         val scaledPadV = bitmap.width * 0.015f
@@ -362,11 +372,11 @@ class OcrPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
 
         canvas.drawBitmap(bitmap, 0f, 0f, null)
 
-        val bgPaint = Paint().apply { color = bgColor; style = Paint.Style.FILL }
+        val bgPaint = Paint().apply { color = 0xB3000000.toInt(); style = Paint.Style.FILL }
         canvas.drawRect(0f, bitmap.height.toFloat(), bitmap.width.toFloat(), totalHeight.toFloat(), bgPaint)
 
         val textPaint = Paint().apply {
-            color = textColor
+            color = 0xCCFFFFFF.toInt()
             textSize = scaledFontSize
             isAntiAlias = true
             isFakeBoldText = true
@@ -379,7 +389,8 @@ class OcrPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
         }
 
         val stream = ByteArrayOutputStream()
-        output.compress(Bitmap.CompressFormat.PNG, 100, stream)
+        val format = if (quality < 100) Bitmap.CompressFormat.JPEG else Bitmap.CompressFormat.PNG
+        output.compress(format, quality, stream)
         output.recycle()
 
         return stream.toByteArray()

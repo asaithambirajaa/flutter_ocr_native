@@ -15,6 +15,8 @@ A Flutter plugin for extracting text from images using native on-device OCR engi
 - Document viewer with pinch-to-zoom
 - Download with configurable watermark (Lead ID, Lat, Long, etc.)
 - Watermark auto-scales to image resolution — always readable
+- Configurable image compression (JPEG quality 1-100 or PNG lossless)
+- Supports any input image format (JPEG, PNG, WEBP, BMP, GIF, HEIC, TIFF)
 - Platform-specific download paths handled internally
 - Fully on-device — no network calls, works offline
 
@@ -22,7 +24,7 @@ A Flutter plugin for extracting text from images using native on-device OCR engi
 
 ```yaml
 dependencies:
-  flutter_ocr_native: ^0.0.6
+  flutter_ocr_native: ^0.0.7
 ```
 
 ### Android
@@ -174,6 +176,37 @@ final file = await OcrDocumentSaver.downloadFromPath(
 );
 ```
 
+### Image Compression
+
+```dart
+// JPEG with quality (default 90)
+final file = await OcrDocumentSaver.downloadFromPath(
+  result: result,
+  originalImagePath: imagePath,
+  imageQuality: 70,                    // JPEG 70%
+);
+
+// PNG lossless
+final file = await OcrDocumentSaver.downloadFromPath(
+  result: result,
+  originalImagePath: imagePath,
+  format: OcrImageFormat.png,
+);
+
+// Auto-detect format from file extension
+// .png → PNG, .jpg/.webp/etc → JPEG
+final file = await OcrDocumentSaver.downloadFromPath(
+  result: result,
+  originalImagePath: 'photo.png',      // saves as PNG
+);
+
+// Standalone compress any image
+final compressed = await OcrDocumentSaver.compressImage(
+  anyImageBytes,
+  quality: 60,
+);
+```
+
 ### Custom Validator
 
 ```dart
@@ -226,4 +259,4 @@ ios/Classes/
 
 ## Flutter Compatibility
 
-Requires Flutter 3.27.0+ (Dart SDK >=3.6.0 <4.0.0)
+Requires Flutter 3.19.0+ (Dart SDK >=3.2.4 <4.0.0)

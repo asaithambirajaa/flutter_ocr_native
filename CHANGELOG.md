@@ -1,3 +1,14 @@
+## 0.0.7
+
+* Added `OcrImageFormat` enum — configurable output format (JPEG or PNG)
+* Added `imageQuality` parameter to all save/download methods — JPEG compression 1-100
+* Added `format` parameter to all save/download methods — choose JPEG or PNG output
+* `downloadFromPath` auto-detects output format from original file extension (.png → PNG, others → JPEG)
+* Added `compressImage()` standalone method — compress any image bytes natively
+* Accepts any input image format (JPEG, PNG, WEBP, BMP, GIF, HEIC, TIFF) — decoded natively
+* Native compression via Android `Bitmap.compress` and iOS `jpegData`/`pngData`
+* Watermark is now fully optional — omit or pass null to skip
+
 ## 0.0.6
 
 * Lowered SDK constraint to `>=3.2.4 <4.0.0` (Flutter 3.19.0+) for broader compatibility

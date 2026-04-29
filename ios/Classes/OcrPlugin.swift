@@ -42,16 +42,20 @@ public class OcrPlugin: NSObject, FlutterPlugin {
                 result(FlutterError(code: "INVALID_ARG", message: "imageBytes and lines required", details: nil))
                 return
             }
-            let fontSize = args["fontSize"] as? CGFloat ?? 28.0
-            let textColorVal = args["textColor"] as? Int64 ?? 0xCCFFFFFF
-            let bgColorVal = args["bgColor"] as? Int64 ?? 0xB3000000
-            let padH = args["padH"] as? CGFloat ?? 24.0
-            let padV = args["padV"] as? CGFloat ?? 16.0
-
-            let output = burnWatermarkOnImage(uiImage, lines: lines, fontSize: fontSize,
-                textColor: UIColor(argb: textColorVal), bgColor: UIColor(argb: bgColorVal),
-                padH: padH, padV: padV)
+            let quality = args["quality"] as? Int ?? 90
+            let output = burnWatermarkOnImage(uiImage, lines: lines, quality: quality)
             result(output)
+
+        case "compressImage":
+            guard let args = call.arguments as? [String: Any],
+                  let bytes = args["imageBytes"] as? FlutterStandardTypedData,
+                  let uiImage = UIImage(data: bytes.data) else {
+                result(FlutterError(code: "INVALID_ARG", message: "imageBytes required", details: nil))
+                return
+            }
+            let quality = args["quality"] as? Int ?? 80
+            let compressed = uiImage.jpegData(compressionQuality: CGFloat(quality) / 100.0)
+            result(compressed.map { FlutterStandardTypedData(bytes: $0) })
 
         case "dispose":
             result(nil)
@@ -236,10 +240,8 @@ public class OcrPlugin: NSObject, FlutterPlugin {
     }
 
     private func burnWatermarkOnImage(_ image: UIImage, lines: [String: String],
-        fontSize: CGFloat, textColor: UIColor, bgColor: UIColor,
-        padH: CGFloat, padV: CGFloat) -> FlutterStandardTypedData? {
+        quality: Int) -> FlutterStandardTypedData? {
 
-        // Auto-scale: font size = ~3% of image width, minimum 36
         let scaledFontSize = max(image.size.width * 0.03, 36)
         let scaledPadH = image.size.width * 0.02
         let scaledPadV = image.size.width * 0.015
@@ -252,12 +254,12 @@ public class OcrPlugin: NSObject, FlutterPlugin {
 
         image.draw(at: .zero)
 
-        bgColor.setFill()
+        UIColor(red: 0, green: 0, blue: 0, alpha: 0.7).setFill()
         UIRectFill(CGRect(x: 0, y: image.size.height, width: totalSize.width, height: wmHeight))
 
         let attrs: [NSAttributedString.Key: Any] = [
             .font: UIFont.boldSystemFont(ofSize: scaledFontSize),
-            .foregroundColor: textColor
+            .foregroundColor: UIColor(red: 1, green: 1, blue: 1, alpha: 0.8)
         ]
         var y = image.size.height + scaledPadV
         for (key, value) in lines {
@@ -266,22 +268,19 @@ public class OcrPlugin: NSObject, FlutterPlugin {
             y += lineHeight
         }
 
-        guard let output = UIGraphicsGetImageFromCurrentImageContext(),
-              let pngData = output.pngData() else {
+        guard let output = UIGraphicsGetImageFromCurrentImageContext() else {
             UIGraphicsEndImageContext()
             return nil
         }
         UIGraphicsEndImageContext()
-        return FlutterStandardTypedData(bytes: pngData)
-    }
-}
 
-extension UIColor {
-    convenience init(argb: Int64) {
-        let a = CGFloat((argb >> 24) & 0xFF) / 255.0
-        let r = CGFloat((argb >> 16) & 0xFF) / 255.0
-        let g = CGFloat((argb >> 8) & 0xFF) / 255.0
-        let b = CGFloat(argb & 0xFF) / 255.0
-        self.init(red: r, green: g, blue: b, alpha: a)
+        let data: Data?
+        if quality < 100 {
+            data = output.jpegData(compressionQuality: CGFloat(quality) / 100.0)
+        } else {
+            data = output.pngData()
+        }
+        guard let finalData = data else { return nil }
+        return FlutterStandardTypedData(bytes: finalData)
     }
 }
