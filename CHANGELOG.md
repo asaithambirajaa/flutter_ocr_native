@@ -1,3 +1,9 @@
+## 0.0.6
+
+* Lowered SDK constraint to `>=3.2.4 <4.0.0` (Flutter 3.19.0+) for broader compatibility
+* Fixed `Color.toARGB32()` not available on older Dart versions — replaced with version-safe `_colorToArgb()` helper using `.a/.r/.g/.b` float API
+* Zero deprecation warnings on all Dart 3.x versions (3.2.4 through 3.11+)
+
 ## 0.0.5
 
 * Updated README with complete usage documentation for all features

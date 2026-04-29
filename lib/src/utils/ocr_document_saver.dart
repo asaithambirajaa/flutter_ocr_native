@@ -89,8 +89,8 @@ class OcrDocumentSaver {
         'imageBytes': imageBytes,
         'lines': watermark.lines,
         'fontSize': watermark.fontSize * 2, // scale up for image resolution
-        'textColor': watermark.textColor.toARGB32(),
-        'bgColor': watermark.backgroundColor.toARGB32(),
+        'textColor': _colorToArgb(watermark.textColor),
+        'bgColor': _colorToArgb(watermark.backgroundColor),
         'padH': watermark.padding.left * 2,
         'padV': watermark.padding.top * 2,
       },
@@ -120,5 +120,14 @@ class OcrDocumentSaver {
       if (external != null) return external;
     }
     return getApplicationDocumentsDirectory();
+  }
+
+  /// Converts a Color to ARGB int — works on all Dart 3.x versions.
+  static int _colorToArgb(Color color) {
+    final a = (color.a * 255).round() & 0xFF;
+    final r = (color.r * 255).round() & 0xFF;
+    final g = (color.g * 255).round() & 0xFF;
+    final b = (color.b * 255).round() & 0xFF;
+    return (a << 24) | (r << 16) | (g << 8) | b;
   }
 }
