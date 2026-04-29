@@ -3,7 +3,6 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_ocr_native/flutter_ocr_native.dart';
 import 'package:image_picker/image_picker.dart';
-import 'package:path_provider/path_provider.dart';
 
 void main() => runApp(const OcrExampleApp());
 
@@ -37,6 +36,17 @@ class _OcrHomePageState extends State<OcrHomePage> {
   bool _loading = false;
   String? _error;
 
+  OcrWatermark get _watermark => const OcrWatermark(
+        lines: {
+          'Lead ID': 'LD-20250101-001',
+          'Lat': '12.9716',
+          'Long': '77.5946',
+          'Agent': 'Ram Kumar',
+          'Date': '2025-01-15 10:30',
+        },
+        fontSize: 16,
+      );
+
   Future<void> _pickAndRecognize(ImageSource source) async {
     final picked = await _picker.pickImage(source: source);
     if (picked == null) return;
@@ -63,23 +73,11 @@ class _OcrHomePageState extends State<OcrHomePage> {
     }
   }
 
-  OcrWatermark get _watermark => const OcrWatermark(
-        lines: {
-          'Lead ID': 'LD-20250101-001',
-          'Lat': '12.9716',
-          'Long': '77.5946',
-          'Agent': 'Ram Kumar',
-          'Date': '2025-01-15 10:30',
-        },
-      );
-
   Future<void> _saveImage() async {
     if (_result == null || _imageFile == null) return;
-    final dir = await getApplicationDocumentsDirectory();
-    final file = await OcrDocumentSaver.saveFromPath(
+    final file = await OcrDocumentSaver.downloadFromPath(
       result: _result!,
       originalImagePath: _imageFile!.path,
-      directory: dir,
       watermark: _watermark,
     );
     if (mounted) {
@@ -98,10 +96,7 @@ class _OcrHomePageState extends State<OcrHomePage> {
       title: _result!.hasAadhaar ? 'Masked Document' : 'Document',
       watermark: _watermark,
       onSave: (bytes) async {
-        final dir = await getApplicationDocumentsDirectory();
-        final file = File(
-            '${dir.path}/ocr_${DateTime.now().millisecondsSinceEpoch}.jpg');
-        await file.writeAsBytes(bytes);
+        final file = await OcrDocumentSaver.downloadBytes(imageBytes: bytes);
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(content: Text('Saved to ${file.path}')),
@@ -150,8 +145,6 @@ class _OcrHomePageState extends State<OcrHomePage> {
             ],
           ),
           const SizedBox(height: 16),
-
-          // Image preview
           if (hasResult && _result!.hasAadhaar)
             GestureDetector(
               onTap: _viewImage,
@@ -170,7 +163,6 @@ class _OcrHomePageState extends State<OcrHomePage> {
                     height: 250, width: double.infinity, fit: BoxFit.cover),
               ),
             ),
-
           if (hasResult && !_loading) ...[
             const SizedBox(height: 12),
             Row(
@@ -193,11 +185,8 @@ class _OcrHomePageState extends State<OcrHomePage> {
               ],
             ),
           ],
-
           const SizedBox(height: 16),
-
           if (_loading) const Center(child: CircularProgressIndicator()),
-
           if (_error != null)
             Card(
               color: Theme.of(context).colorScheme.errorContainer,
@@ -208,7 +197,6 @@ class _OcrHomePageState extends State<OcrHomePage> {
                         color: Theme.of(context).colorScheme.onErrorContainer)),
               ),
             ),
-
           if (hasResult) ...[
             Card(
               child: Padding(

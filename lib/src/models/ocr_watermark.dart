@@ -25,7 +25,8 @@ class OcrWatermark {
   /// Background color behind the watermark. Defaults to black with 70% opacity.
   final Color backgroundColor;
 
-  /// Font size. Defaults to 12.
+  /// Font size for the viewer widget. Defaults to 12.
+  /// For the downloaded image, font size is auto-scaled to the image resolution.
   final double fontSize;
 
   /// Padding inside the watermark area.

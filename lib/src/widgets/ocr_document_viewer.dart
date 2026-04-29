@@ -1,12 +1,11 @@
 import 'dart:io';
 import 'dart:typed_data';
-import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
-import 'package:flutter/rendering.dart';
 
 import '../models/ocr_result.dart';
 import '../models/ocr_watermark.dart';
+import '../utils/ocr_document_saver.dart';
 
 /// Full-screen document viewer with pinch-to-zoom and optional watermark.
 class OcrDocumentViewer extends StatelessWidget {
@@ -18,13 +17,9 @@ class OcrDocumentViewer extends StatelessWidget {
   final Future<void> Function(Uint8List imageBytes)? onSave;
   final double minScale;
   final double maxScale;
-
-  /// Watermark config. If provided, renders watermark text below the image.
   final OcrWatermark? watermark;
 
-  final GlobalKey _repaintKey = GlobalKey();
-
-  OcrDocumentViewer({
+  const OcrDocumentViewer({
     super.key,
     required this.result,
     this.originalFile,
@@ -37,7 +32,6 @@ class OcrDocumentViewer extends StatelessWidget {
     this.watermark,
   });
 
-  /// Opens the viewer as a full-screen page.
   static Future<void> show(
     BuildContext context, {
     required OcrResult result,
@@ -62,13 +56,20 @@ class OcrDocumentViewer extends StatelessWidget {
     );
   }
 
-  Future<Uint8List?> _captureWithWatermark() async {
-    final boundary = _repaintKey.currentContext?.findRenderObject() as RenderRepaintBoundary?;
-    if (boundary == null) return _getImageBytes();
+  Future<Uint8List?> _getRawImageBytes() async {
+    if (result.hasAadhaar) return result.maskedImageBytes;
+    if (originalBytes != null) return originalBytes;
+    if (originalFile != null) return originalFile!.readAsBytes();
+    return null;
+  }
 
-    final image = await boundary.toImage(pixelRatio: 3.0);
-    final byteData = await image.toByteData(format: ui.ImageByteFormat.png);
-    return byteData?.buffer.asUint8List();
+  Future<Uint8List?> _getImageBytesWithWatermark() async {
+    final bytes = await _getRawImageBytes();
+    if (bytes == null) return null;
+    if (watermark != null) {
+      return OcrDocumentSaver.burnWatermark(bytes, watermark!);
+    }
+    return bytes;
   }
 
   @override
@@ -83,9 +84,7 @@ class OcrDocumentViewer extends StatelessWidget {
           if (onSave != null)
             IconButton(
               onPressed: () async {
-                final bytes = watermark != null
-                    ? await _captureWithWatermark()
-                    : _getImageBytes();
+                final bytes = await _getImageBytesWithWatermark();
                 if (bytes != null) await onSave!(bytes);
               },
               icon: const Icon(Icons.save_alt),
@@ -97,15 +96,12 @@ class OcrDocumentViewer extends StatelessWidget {
         child: InteractiveViewer(
           minScale: minScale,
           maxScale: maxScale,
-          child: RepaintBoundary(
-            key: _repaintKey,
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                _buildImage(),
-                if (watermark != null) _buildWatermark(watermark!),
-              ],
-            ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              _buildImage(),
+              if (watermark != null) _buildWatermark(watermark!),
+            ],
           ),
         ),
       ),
@@ -145,10 +141,5 @@ class OcrDocumentViewer extends StatelessWidget {
         }).toList(),
       ),
     );
-  }
-
-  Uint8List? _getImageBytes() {
-    if (result.hasAadhaar) return result.maskedImageBytes;
-    return originalBytes;
   }
 }

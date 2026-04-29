@@ -34,6 +34,25 @@ public class OcrPlugin: NSObject, FlutterPlugin {
             }
             recognizeText(from: cgImage, result: result)
 
+        case "burnWatermark":
+            guard let args = call.arguments as? [String: Any],
+                  let bytes = args["imageBytes"] as? FlutterStandardTypedData,
+                  let lines = args["lines"] as? [String: String],
+                  let uiImage = UIImage(data: bytes.data) else {
+                result(FlutterError(code: "INVALID_ARG", message: "imageBytes and lines required", details: nil))
+                return
+            }
+            let fontSize = args["fontSize"] as? CGFloat ?? 28.0
+            let textColorVal = args["textColor"] as? Int64 ?? 0xCCFFFFFF
+            let bgColorVal = args["bgColor"] as? Int64 ?? 0xB3000000
+            let padH = args["padH"] as? CGFloat ?? 24.0
+            let padV = args["padV"] as? CGFloat ?? 16.0
+
+            let output = burnWatermarkOnImage(uiImage, lines: lines, fontSize: fontSize,
+                textColor: UIColor(argb: textColorVal), bgColor: UIColor(argb: bgColorVal),
+                padH: padH, padV: padV)
+            result(output)
+
         case "dispose":
             result(nil)
 
@@ -214,5 +233,55 @@ public class OcrPlugin: NSObject, FlutterPlugin {
 
         let score = (avgConfidence * 0.5) + ((1.0 - lowConfRatio) * 0.5)
         return score > 0.45
+    }
+
+    private func burnWatermarkOnImage(_ image: UIImage, lines: [String: String],
+        fontSize: CGFloat, textColor: UIColor, bgColor: UIColor,
+        padH: CGFloat, padV: CGFloat) -> FlutterStandardTypedData? {
+
+        // Auto-scale: font size = ~3% of image width, minimum 36
+        let scaledFontSize = max(image.size.width * 0.03, 36)
+        let scaledPadH = image.size.width * 0.02
+        let scaledPadV = image.size.width * 0.015
+        let lineHeight = scaledFontSize * 1.5
+        let wmHeight = CGFloat(lines.count) * lineHeight + scaledPadV * 2
+        let totalSize = CGSize(width: image.size.width, height: image.size.height + wmHeight)
+
+        UIGraphicsBeginImageContextWithOptions(totalSize, false, image.scale)
+        guard UIGraphicsGetCurrentContext() != nil else { return nil }
+
+        image.draw(at: .zero)
+
+        bgColor.setFill()
+        UIRectFill(CGRect(x: 0, y: image.size.height, width: totalSize.width, height: wmHeight))
+
+        let attrs: [NSAttributedString.Key: Any] = [
+            .font: UIFont.boldSystemFont(ofSize: scaledFontSize),
+            .foregroundColor: textColor
+        ]
+        var y = image.size.height + scaledPadV
+        for (key, value) in lines {
+            let text = "\(key): \(value)" as NSString
+            text.draw(at: CGPoint(x: scaledPadH, y: y), withAttributes: attrs)
+            y += lineHeight
+        }
+
+        guard let output = UIGraphicsGetImageFromCurrentImageContext(),
+              let pngData = output.pngData() else {
+            UIGraphicsEndImageContext()
+            return nil
+        }
+        UIGraphicsEndImageContext()
+        return FlutterStandardTypedData(bytes: pngData)
+    }
+}
+
+extension UIColor {
+    convenience init(argb: Int64) {
+        let a = CGFloat((argb >> 24) & 0xFF) / 255.0
+        let r = CGFloat((argb >> 16) & 0xFF) / 255.0
+        let g = CGFloat((argb >> 8) & 0xFF) / 255.0
+        let b = CGFloat(argb & 0xFF) / 255.0
+        self.init(red: r, green: g, blue: b, alpha: a)
     }
 }

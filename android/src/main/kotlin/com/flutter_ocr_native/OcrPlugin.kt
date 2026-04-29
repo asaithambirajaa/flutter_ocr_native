@@ -71,6 +71,30 @@ class OcrPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
                 val image = InputImage.fromBitmap(bitmap, 0)
                 processImage(image, bitmap, result)
             }
+            "burnWatermark" -> {
+                val bytes = call.argument<ByteArray>("imageBytes")
+                val lines = call.argument<Map<String, String>>("lines")
+                val fontSize = call.argument<Double>("fontSize") ?: 28.0
+                val textColor = call.argument<Long>("textColor") ?: 0xCCFFFFFFL
+                val bgColor = call.argument<Long>("bgColor") ?: 0xB3000000L
+                val padH = call.argument<Double>("padH") ?: 24.0
+                val padV = call.argument<Double>("padV") ?: 16.0
+
+                if (bytes == null || lines == null || lines.isEmpty()) {
+                    result.error("INVALID_ARG", "imageBytes and lines are required", null)
+                    return
+                }
+
+                val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                if (bitmap == null) {
+                    result.error("DECODE_ERROR", "Could not decode image bytes", null)
+                    return
+                }
+
+                val output = burnWatermarkOnBitmap(bitmap, lines, fontSize.toFloat(),
+                    textColor.toInt(), bgColor.toInt(), padH.toFloat(), padV.toFloat())
+                result.success(output)
+            }
             "dispose" -> {
                 recognizer?.close()
                 recognizer = null
@@ -314,6 +338,51 @@ class OcrPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
 
     private fun isEnglish(text: String): Boolean {
         return englishPattern.containsMatchIn(text)
+    }
+
+    private fun burnWatermarkOnBitmap(
+        bitmap: Bitmap,
+        lines: Map<String, String>,
+        fontSize: Float,
+        textColor: Int,
+        bgColor: Int,
+        padH: Float,
+        padV: Float
+    ): ByteArray {
+        // Auto-scale: font size = ~3% of image width, minimum 36px
+        val scaledFontSize = maxOf(bitmap.width * 0.03f, 36f)
+        val scaledPadH = bitmap.width * 0.02f
+        val scaledPadV = bitmap.width * 0.015f
+        val lineHeight = scaledFontSize * 1.5f
+        val wmHeight = (lines.size * lineHeight + scaledPadV * 2).toInt()
+        val totalHeight = bitmap.height + wmHeight
+
+        val output = Bitmap.createBitmap(bitmap.width, totalHeight, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(output)
+
+        canvas.drawBitmap(bitmap, 0f, 0f, null)
+
+        val bgPaint = Paint().apply { color = bgColor; style = Paint.Style.FILL }
+        canvas.drawRect(0f, bitmap.height.toFloat(), bitmap.width.toFloat(), totalHeight.toFloat(), bgPaint)
+
+        val textPaint = Paint().apply {
+            color = textColor
+            textSize = scaledFontSize
+            isAntiAlias = true
+            isFakeBoldText = true
+        }
+
+        var y = bitmap.height.toFloat() + scaledPadV + scaledFontSize
+        for ((key, value) in lines) {
+            canvas.drawText("$key: $value", scaledPadH, y, textPaint)
+            y += lineHeight
+        }
+
+        val stream = ByteArrayOutputStream()
+        output.compress(Bitmap.CompressFormat.PNG, 100, stream)
+        output.recycle()
+
+        return stream.toByteArray()
     }
 
     private fun rectToMap(rect: Rect): Map<String, Any> {
