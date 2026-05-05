@@ -4,6 +4,9 @@ A Flutter plugin for extracting text from images using native on-device OCR engi
 
 - **Android**: Google ML Kit Text Recognition
 - **iOS**: Apple Vision Framework
+- **macOS**: Apple Vision Framework
+- **Windows**: Windows.Media.Ocr (WinRT)
+- **Linux**: Tesseract OCR
 
 ## Features
 
@@ -11,6 +14,7 @@ A Flutter plugin for extracting text from images using native on-device OCR engi
 - Structured results: blocks → lines → elements with bounding boxes & confidence scores
 - English-only extraction — non-Latin scripts auto-filtered
 - Aadhaar number masking (text + image) — configurable
+- Aadhaar & PAN number validation (Verhoeff checksum, format check)
 - Handwriting detection — rejects non-printed documents
 - Document viewer with pinch-to-zoom
 - Download with configurable watermark (Lead ID, Lat, Long, etc.)
@@ -24,7 +28,7 @@ A Flutter plugin for extracting text from images using native on-device OCR engi
 
 ```yaml
 dependencies:
-  flutter_ocr_native: ^0.0.7
+  flutter_ocr_native: ^0.1.0
 ```
 
 ### Android
@@ -39,12 +43,19 @@ android {
 }
 ```
 
-### iOS
+### iOS / macOS
 
-Minimum iOS 13.0. Set in `ios/Podfile`:
+iOS minimum 13.0, macOS minimum 10.15.
 
-```ruby
-platform :ios, '13.0'
+### Windows
+
+Requires Windows 10+. No additional setup.
+
+### Linux
+
+Requires Tesseract:
+```bash
+sudo apt install libtesseract-dev tesseract-ocr-eng libleptonica-dev
 ```
 
 ## Usage
@@ -99,10 +110,50 @@ try {
 }
 ```
 
+### Document Number Validation
+
+```dart
+final result = await reader.readFromPath(path);
+
+// Aadhaar validation
+if (result.isAadhaarValid) {
+  print('Valid Aadhaar');
+} else {
+  print(result.aadhaarError); // "Aadhaar checksum invalid"
+}
+
+// PAN validation
+if (result.isPanValid) {
+  print('Valid PAN — ${result.panHolderType}'); // "Individual"
+} else {
+  print(result.panError); // "PAN 4th character is invalid holder type"
+}
+
+// Standalone validation
+DocumentNumberValidator.isValidAadhaar('5399 8956 2356'); // true/false
+DocumentNumberValidator.validateAadhaar('0000 0000 0000'); // "Aadhaar cannot start with 0"
+DocumentNumberValidator.isValidPAN('ABCPD1234F'); // true/false
+DocumentNumberValidator.validatePAN('ABCXD1234F'); // "PAN 4th character is invalid holder type"
+```
+
+### Document Details Parsing
+
+```dart
+final details = AadhaarDetails.fromText(result.text);
+print(details.name);          // "Ram Deva"
+print(details.fatherName);    // "Shiv Kumar"
+print(details.dob);           // "01/08/1994"
+print(details.gender);        // "Male"
+print(details.address);       // "123 Main St, Chennai 600001"
+print(details.aadhaarNumber); // "5399 8956 2356"
+
+// Or use the ready-made widget
+OcrDetailsCard(result: result, maskAadhaar: true)
+```
+
 ### Document Viewer
 
 ```dart
-// One-liner full-screen viewer with pinch-to-zoom
 OcrDocumentViewer.show(
   context,
   result: result,
@@ -117,15 +168,6 @@ OcrDocumentViewer.show(
     await OcrDocumentSaver.downloadBytes(imageBytes: bytes);
   },
 );
-
-// Or use as a widget
-OcrDocumentViewer(
-  result: result,
-  originalFile: imageFile,
-  watermark: watermark,
-  minScale: 0.5,
-  maxScale: 5.0,
-)
 ```
 
 ### Download with Watermark
@@ -139,33 +181,12 @@ final watermark = OcrWatermark(
     'Agent': 'Ram Kumar',
     'Date': '2025-01-15 10:30',
   },
-  // Optional styling:
-  // textColor: Color(0xCCFFFFFF),
-  // backgroundColor: Color(0xB3000000),
-  // fontSize: 12,
 );
 
 // Auto downloads to platform-specific folder
-// Android: /storage/emulated/0/Download/
-// iOS: App Documents (visible in Files app)
 final file = await OcrDocumentSaver.downloadFromPath(
   result: result,
   originalImagePath: imagePath,
-  watermark: watermark,
-);
-
-// Or from bytes
-final file = await OcrDocumentSaver.download(
-  result: result,
-  originalImageBytes: imageBytes,
-  watermark: watermark,
-);
-
-// Save to custom directory
-final file = await OcrDocumentSaver.save(
-  result: result,
-  originalImageBytes: imageBytes,
-  directory: myDirectory,
   watermark: watermark,
 );
 
@@ -191,13 +212,6 @@ final file = await OcrDocumentSaver.downloadFromPath(
   result: result,
   originalImagePath: imagePath,
   format: OcrImageFormat.png,
-);
-
-// Auto-detect format from file extension
-// .png → PNG, .jpg/.webp/etc → JPEG
-final file = await OcrDocumentSaver.downloadFromPath(
-  result: result,
-  originalImagePath: 'photo.png',      // saves as PNG
 );
 
 // Standalone compress any image
@@ -230,14 +244,17 @@ lib/
 ├── flutter_ocr_native.dart               # Public barrel export
 └── src/
     ├── models/
+    │   ├── aadhaar_details.dart            # AadhaarDetails parser
     │   ├── ocr_exception.dart             # EmptyImageException, HandwrittenTextException
     │   ├── ocr_result.dart                # OcrResult, TextBlock, TextLine, TextElement
     │   └── ocr_watermark.dart             # OcrWatermark config
     ├── utils/
     │   └── ocr_document_saver.dart        # Download & save with watermark
     ├── validators/
+    │   ├── document_number_validator.dart  # Aadhaar & PAN validation
     │   └── ocr_validator.dart             # Document validation
     ├── widgets/
+    │   ├── ocr_details_card.dart          # Structured details card widget
     │   └── ocr_document_viewer.dart       # Full-screen viewer widget
     ├── ocr_platform_interface.dart         # Abstract platform contract
     ├── ocr_method_channel.dart             # MethodChannel implementation
@@ -248,6 +265,15 @@ android/src/main/kotlin/com/flutter_ocr_native/
 
 ios/Classes/
     └── OcrPlugin.swift                    # Vision OCR + Aadhaar masking + watermark
+
+macos/Classes/
+    └── OcrPlugin.swift                    # Vision OCR (macOS)
+
+windows/
+    └── ocr_plugin.cpp                     # WinRT OCR + GDI+
+
+linux/
+    └── ocr_plugin.cc                      # Tesseract OCR + Leptonica
 ```
 
 ## Supported Platforms
@@ -256,6 +282,9 @@ ios/Classes/
 |----------|-------------|------------|
 | Android  | SDK 21      | Google ML Kit Text Recognition |
 | iOS      | 13.0        | Apple Vision Framework |
+| macOS    | 10.15       | Apple Vision Framework |
+| Windows  | 10          | Windows.Media.Ocr (WinRT) |
+| Linux    | Any         | Tesseract OCR |
 
 ## Flutter Compatibility
 

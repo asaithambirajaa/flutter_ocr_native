@@ -48,9 +48,30 @@ void main() {
       expect(result.maskAadhaar().text, 'XXXX XXXX 2356');
     });
 
-    test('masks without spaces', () {
-      final result = OcrResult.fromMap({'text': '539989562356', 'blocks': []});
-      expect(result.maskAadhaar().text, 'XXXXXXXX2356');
+    test('masks with dashes', () {
+      final result = OcrResult.fromMap({'text': '5399-8956-2356', 'blocks': []});
+      expect(result.maskAadhaar().text, 'XXXX-XXXX-2356');
+    });
+
+    test('does not mask pincode', () {
+      final result = OcrResult.fromMap({'text': 'Chennai 600001', 'blocks': []});
+      expect(result.maskAadhaar().text, 'Chennai 600001');
+    });
+
+    test('does not mask pincode near aadhaar', () {
+      final result = OcrResult.fromMap({
+        'text': 'Address: Chennai 600001\n5399 8956 2356',
+        'blocks': [],
+      });
+      final masked = result.maskAadhaar().text;
+      expect(masked.contains('600001'), true);
+      expect(masked.contains('XXXX XXXX 2356'), true);
+    });
+
+    test('does not mask names', () {
+      final result = OcrResult.fromMap({'text': 'Ram Deva\n5399 8956 2356', 'blocks': []});
+      final masked = result.maskAadhaar().text;
+      expect(masked.contains('Ram Deva'), true);
     });
 
     test('does not mask non-aadhaar text', () {

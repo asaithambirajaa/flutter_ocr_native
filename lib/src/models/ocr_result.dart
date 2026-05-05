@@ -1,6 +1,8 @@
 import 'dart:typed_data';
 import 'dart:ui';
 
+import '../validators/document_number_validator.dart';
+
 class OcrResult {
   final String text;
   final List<TextBlock> blocks;
@@ -12,12 +14,16 @@ class OcrResult {
   /// Null if no Aadhaar number was detected in the image.
   final Uint8List? maskedImageBytes;
 
-  const OcrResult({
+  /// Original unmasked text — used internally for validation.
+  final String _rawText;
+
+  OcrResult({
     required this.text,
     required this.blocks,
     this.isPrinted = false,
     this.maskedImageBytes,
-  });
+    String? rawText,
+  }) : _rawText = rawText ?? text;
 
   factory OcrResult.fromMap(Map<String, dynamic> map) {
     final blocks = (map['blocks'] as List?)
@@ -25,11 +31,13 @@ class OcrResult {
             .toList() ??
         [];
     final imageBytes = map['maskedImageBytes'];
+    final text = map['text'] ?? '';
     return OcrResult(
-      text: map['text'] ?? '',
+      text: text,
       blocks: blocks,
       isPrinted: map['isPrinted'] ?? false,
       maskedImageBytes: imageBytes is Uint8List ? imageBytes : null,
+      rawText: text,
     );
   }
 
@@ -38,6 +46,34 @@ class OcrResult {
 
   /// Whether an Aadhaar number was detected and the image was masked.
   bool get hasAadhaar => maskedImageBytes != null;
+
+  /// Whether the detected Aadhaar number is valid (Verhoeff checksum).
+  /// Validates against the original unmasked text.
+  bool get isAadhaarValid => DocumentNumberValidator.extractAadhaar(_rawText) != null;
+
+  /// Aadhaar validation error message. Null if valid or not found.
+  String? get aadhaarError {
+    final match = RegExp(r'(?<!\d)(\d{4})[\s\-]+(\d{4})[\s\-]+(\d{4})(?!\d)').firstMatch(_rawText);
+    if (match == null) return 'Aadhaar number not found';
+    final number = '${match.group(1)}${match.group(2)}${match.group(3)}';
+    return DocumentNumberValidator.validateAadhaar(number);
+  }
+
+  /// Whether a valid PAN number is present in the text.
+  bool get isPanValid => DocumentNumberValidator.extractPAN(_rawText) != null;
+
+  /// PAN validation error message. Null if valid or not found.
+  String? get panError {
+    final match = RegExp(r'[A-Z]{3}[A-Z][A-Z]\d{4}[A-Z]').firstMatch(_rawText.toUpperCase());
+    if (match == null) return 'PAN number not found';
+    return DocumentNumberValidator.validatePAN(match.group(0)!);
+  }
+
+  /// The detected PAN holder type (Individual, Company, etc.) or null.
+  String? get panHolderType {
+    final pan = DocumentNumberValidator.extractPAN(_rawText);
+    return pan != null ? DocumentNumberValidator.panHolderType(pan) : null;
+  }
 
   /// Returns a new [OcrResult] with Aadhaar numbers masked in text.
   OcrResult maskAadhaar() => _maskAadhaar(this);
@@ -131,7 +167,8 @@ Rect _parseRect(dynamic map) {
   );
 }
 
-final _aadhaarPattern = RegExp(r'(\d{4})([\s\-]*)(\d{4})([\s\-]*)(\d{4})');
+// Matches exactly 3 groups of 4 digits — not part of a longer number sequence
+final _aadhaarPattern = RegExp(r'(?<!\d)(\d{4})([\s\-]+)(\d{4})([\s\-]+)(\d{4})(?!\d)');
 
 String _maskAadhaarInText(String text) {
   return text.replaceAllMapped(_aadhaarPattern, (m) {
@@ -147,6 +184,7 @@ OcrResult _maskAadhaar(OcrResult result) {
     text: _maskAadhaarInText(result.text),
     isPrinted: result.isPrinted,
     maskedImageBytes: result.maskedImageBytes,
+    rawText: result._rawText, // preserve original for validation
     blocks: result.blocks.map((block) {
       final maskedLines = block.lines.map((line) {
         final maskedLineText = _maskAadhaarInText(line.text);

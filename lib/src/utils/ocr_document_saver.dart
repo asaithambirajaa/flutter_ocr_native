@@ -173,6 +173,18 @@ class OcrDocumentSaver {
       if (await downloads.exists()) return downloads;
       final external = await getExternalStorageDirectory();
       if (external != null) return external;
+    } else if (Platform.isWindows) {
+      final userProfile = Platform.environment['USERPROFILE'];
+      if (userProfile != null) {
+        final downloads = Directory('$userProfile\\Downloads');
+        if (await downloads.exists()) return downloads;
+      }
+    } else if (Platform.isMacOS || Platform.isLinux) {
+      final home = Platform.environment['HOME'];
+      if (home != null) {
+        final downloads = Directory('$home/Downloads');
+        if (await downloads.exists()) return downloads;
+      }
     }
     return getApplicationDocumentsDirectory();
   }

@@ -1,3 +1,20 @@
+## 0.1.0
+
+* Added **macOS** platform support — Apple Vision framework (same as iOS)
+* Added **Windows** platform support — WinRT OCR engine + GDI+ for image processing
+* Added **Linux** platform support — Tesseract OCR + Leptonica
+* Added `DocumentNumberValidator` — validates Aadhaar (Verhoeff checksum) and PAN (format + holder type)
+* Added `validateAadhaar()` and `validatePAN()` methods returning exact error messages
+* Added `result.isAadhaarValid`, `result.isPanValid`, `result.aadhaarError`, `result.panError` getters on `OcrResult`
+* Added `result.panHolderType` — returns "Individual", "Company", "HUF", etc.
+* Added `AadhaarDetails` model — parses OCR text into structured fields (Name, Father/Husband, DOB, Gender, Address, Aadhaar No.)
+* Added `OcrDetailsCard` widget — displays parsed fields in a structured card layout
+* Fixed Aadhaar masking regex — now requires separators between digit groups, won't mask pincodes or names
+* Fixed validation working on masked text — now validates against original unmasked text internally
+* Added `file_picker` support in example app for desktop platforms
+* Example app adapts UI for mobile (camera/gallery) vs desktop (file browser, sidebar layout)
+* Download path support for macOS (`~/Downloads`) and Linux (`~/Downloads`)
+
 ## 0.0.7
 
 * Added `OcrImageFormat` enum — configurable output format (JPEG or PNG)
