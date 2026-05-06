@@ -1,19 +1,28 @@
-## 0.1.0
+## 0.2.0
 
-* Added **macOS** platform support — Apple Vision framework (same as iOS)
-* Added **Windows** platform support — WinRT OCR engine + GDI+ for image processing
+* **Auto-orientation correction** — detects correct image rotation using OCR confidence scoring across all 4 rotations (0°, 90°, 180°, 270°). Works even without EXIF data
+* **Image cropper with rotate** — added rotate button (90° clockwise) to crop UI
+* **Document type auto-detection** — scores OCR text against keywords/patterns for Aadhaar, PAN, Passport, Driving License, Voter ID, Cheque
+* **Unified `DocumentDetails` model** — single `fromResult()` API handles all doc types, face extraction, validation, and `toDisplayMap(maskAadhaar: true)`
+* **Face extraction** — ML Kit Face Detection (Android), Vision (iOS/macOS). Returns cropped face bytes
+* **Document parsers** — `PassportDetails`, `DrivingLicenseDetails`, `VoterIdDetails`, `ChequeDetails`
+* **Extended validation** — Passport, Driving License, Voter ID (EPIC), IFSC, Account number
+* Added `OcrDocumentSaver.correctOrientation()` — auto-corrects image orientation before display
+* Added `OcrDocumentSaver.extractFace()` and `extractFaceFromPath()`
+* Added `OcrDocumentSaver.isFaceExtractionSupported` getter
+* Added `result.docType` and `result.docTypeLabel` getters on `OcrResult`
+* Added `DocumentTypeDetector.detect()`, `.label()`, `.icon()` static methods
+* Added `OcrDocumentViewer` support for `originalBytes` parameter
+* Fixed Voter ID extraction — NFKD normalization for Unicode lookalike characters
+* Fixed false Voter ID matches from date strings (e.g., "biRTH 15/07/199x")
+* Added **macOS** platform support — Apple Vision framework
+* Added **Windows** platform support — WinRT OCR engine + GDI+
 * Added **Linux** platform support — Tesseract OCR + Leptonica
 * Added `DocumentNumberValidator` — validates Aadhaar (Verhoeff checksum) and PAN (format + holder type)
-* Added `validateAadhaar()` and `validatePAN()` methods returning exact error messages
-* Added `result.isAadhaarValid`, `result.isPanValid`, `result.aadhaarError`, `result.panError` getters on `OcrResult`
-* Added `result.panHolderType` — returns "Individual", "Company", "HUF", etc.
-* Added `AadhaarDetails` model — parses OCR text into structured fields (Name, Father/Husband, DOB, Gender, Address, Aadhaar No.)
-* Added `OcrDetailsCard` widget — displays parsed fields in a structured card layout
-* Fixed Aadhaar masking regex — now requires separators between digit groups, won't mask pincodes or names
-* Fixed validation working on masked text — now validates against original unmasked text internally
-* Added `file_picker` support in example app for desktop platforms
-* Example app adapts UI for mobile (camera/gallery) vs desktop (file browser, sidebar layout)
-* Download path support for macOS (`~/Downloads`) and Linux (`~/Downloads`)
+* Added `AadhaarDetails` model — parses OCR text into structured fields
+* Added `OcrDetailsCard` widget
+* Fixed Aadhaar masking regex — requires separators, won't mask pincodes
+* Fixed validation working on masked text — validates against raw text internally
 
 ## 0.0.7
 

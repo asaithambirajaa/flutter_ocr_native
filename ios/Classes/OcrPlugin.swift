@@ -57,6 +57,169 @@ public class OcrPlugin: NSObject, FlutterPlugin {
             let compressed = uiImage.jpegData(compressionQuality: CGFloat(quality) / 100.0)
             result(compressed.map { FlutterStandardTypedData(bytes: $0) })
 
+        case "extractFace":
+            guard let args = call.arguments as? [String: Any],
+                  let bytes = args["imageBytes"] as? FlutterStandardTypedData,
+                  let uiImage = UIImage(data: bytes.data),
+                  let cgImage = uiImage.cgImage else {
+                result(FlutterError(code: "INVALID_ARG", message: "imageBytes required", details: nil))
+                return
+            }
+            extractFace(from: cgImage, result: result)
+
+        case "cropImage":
+            guard let args = call.arguments as? [String: Any],
+                  let bytes = args["imageBytes"] as? FlutterStandardTypedData,
+                  let uiImage = UIImage(data: bytes.data),
+                  let cgImage = uiImage.cgImage else {
+                result(FlutterError(code: "INVALID_ARG", message: "imageBytes required", details: nil))
+                return
+            }
+            let x = args["x"] as? Int ?? 0
+            let y = args["y"] as? Int ?? 0
+            let width = args["width"] as? Int ?? 0
+            let height = args["height"] as? Int ?? 0
+
+            let cropRect = CGRect(x: x, y: y, width: width, height: height)
+            guard let cropped = cgImage.cropping(to: cropRect) else {
+                result(nil)
+                return
+            }
+            let croppedImage = UIImage(cgImage: cropped)
+            guard let jpegData = croppedImage.jpegData(compressionQuality: 0.9) else {
+                result(nil)
+                return
+            }
+            result(FlutterStandardTypedData(bytes: jpegData))
+
+        case "rotateImage":
+            guard let args = call.arguments as? [String: Any],
+                  let bytes = args["imageBytes"] as? FlutterStandardTypedData,
+                  let uiImage = UIImage(data: bytes.data) else {
+                result(FlutterError(code: "INVALID_ARG", message: "imageBytes required", details: nil))
+                return
+            }
+            let degrees = args["degrees"] as? Int ?? 90
+            let radians = CGFloat(degrees) * .pi / 180.0
+            let rotatedSize = CGSize(
+                width: abs(uiImage.size.width * cos(radians)) + abs(uiImage.size.height * sin(radians)),
+                height: abs(uiImage.size.width * sin(radians)) + abs(uiImage.size.height * cos(radians))
+            )
+            UIGraphicsBeginImageContextWithOptions(rotatedSize, false, 1.0)
+            let context = UIGraphicsGetCurrentContext()!
+            context.translateBy(x: rotatedSize.width / 2, y: rotatedSize.height / 2)
+            context.rotate(by: radians)
+            uiImage.draw(in: CGRect(x: -uiImage.size.width / 2, y: -uiImage.size.height / 2, width: uiImage.size.width, height: uiImage.size.height))
+            let rotated = UIGraphicsGetImageFromCurrentImageContext()
+            UIGraphicsEndImageContext()
+            guard let rotatedImg = rotated, let jpegRotated = rotatedImg.jpegData(compressionQuality: 0.9) else {
+                result(nil)
+                return
+            }
+            result(FlutterStandardTypedData(bytes: jpegRotated))
+
+        case "correctOrientation":
+            guard let args = call.arguments as? [String: Any],
+                  let bytes = args["imageBytes"] as? FlutterStandardTypedData,
+                  let uiImage = UIImage(data: bytes.data) else {
+                result(FlutterError(code: "INVALID_ARG", message: "imageBytes required", details: nil))
+                return
+            }
+            // First apply EXIF orientation
+            let fmt = UIGraphicsImageRendererFormat()
+            fmt.scale = 1.0
+            let renderer = UIGraphicsImageRenderer(size: uiImage.size, format: fmt)
+            let normalized = renderer.image { _ in uiImage.draw(at: .zero) }
+            guard let cgBase = normalized.cgImage else {
+                result(FlutterStandardTypedData(bytes: bytes.data))
+                return
+            }
+
+            // Try all 4 rotations with Vision OCR, pick best
+            let rotations: [Int] = [0, 90, 180, 270]
+            var bestDegrees = 0
+            var bestScore: Float = -1
+            let group = DispatchGroup()
+            let lock = NSLock()
+
+            for deg in rotations {
+                group.enter()
+                let testImage: CGImage
+                if deg == 0 {
+                    testImage = cgBase
+                } else {
+                    let radians = CGFloat(deg) * .pi / 180.0
+                    let w = CGFloat(cgBase.width)
+                    let h = CGFloat(cgBase.height)
+                    let newW = abs(w * cos(radians)) + abs(h * sin(radians))
+                    let newH = abs(w * sin(radians)) + abs(h * cos(radians))
+                    let colorSpace = cgBase.colorSpace ?? CGColorSpaceCreateDeviceRGB()
+                    guard let ctx = CGContext(data: nil, width: Int(newW), height: Int(newH), bitsPerComponent: 8, bytesPerRow: 0, space: colorSpace, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else {
+                        group.leave()
+                        continue
+                    }
+                    ctx.translateBy(x: newW / 2, y: newH / 2)
+                    ctx.rotate(by: radians)
+                    ctx.draw(cgBase, in: CGRect(x: -w / 2, y: -h / 2, width: w, height: h))
+                    guard let rotated = ctx.makeImage() else {
+                        group.leave()
+                        continue
+                    }
+                    testImage = rotated
+                }
+
+                let request = VNRecognizeTextRequest { req, _ in
+                    let observations = req.results as? [VNRecognizedTextObservation] ?? []
+                    let score = observations.reduce(Float(0)) { sum, obs in
+                        sum + obs.confidence * Float(obs.topCandidates(1).first?.string.count ?? 0)
+                    }
+                    lock.lock()
+                    if score > bestScore {
+                        bestScore = score
+                        bestDegrees = deg
+                    }
+                    lock.unlock()
+                    group.leave()
+                }
+                request.recognitionLevel = .fast
+                let handler = VNImageRequestHandler(cgImage: testImage, options: [:])
+                DispatchQueue.global(qos: .userInitiated).async {
+                    try? handler.perform([request])
+                }
+            }
+
+            DispatchQueue.global(qos: .userInitiated).async {
+                group.wait()
+                DispatchQueue.main.async {
+                    if bestDegrees == 0 {
+                        guard let jpeg = normalized.jpegData(compressionQuality: 0.95) else {
+                            result(FlutterStandardTypedData(bytes: bytes.data))
+                            return
+                        }
+                        result(FlutterStandardTypedData(bytes: jpeg))
+                    } else {
+                        let radians = CGFloat(bestDegrees) * .pi / 180.0
+                        let w = normalized.size.width
+                        let h = normalized.size.height
+                        let newSize = CGSize(
+                            width: abs(w * cos(radians)) + abs(h * sin(radians)),
+                            height: abs(w * sin(radians)) + abs(h * cos(radians))
+                        )
+                        let r = UIGraphicsImageRenderer(size: newSize, format: fmt)
+                        let rotated = r.image { ctx in
+                            ctx.cgContext.translateBy(x: newSize.width / 2, y: newSize.height / 2)
+                            ctx.cgContext.rotate(by: radians)
+                            normalized.draw(in: CGRect(x: -w / 2, y: -h / 2, width: w, height: h))
+                        }
+                        guard let jpeg = rotated.jpegData(compressionQuality: 0.95) else {
+                            result(FlutterStandardTypedData(bytes: bytes.data))
+                            return
+                        }
+                        result(FlutterStandardTypedData(bytes: jpeg))
+                    }
+                }
+            }
+
         case "dispose":
             result(nil)
 
@@ -66,8 +229,25 @@ public class OcrPlugin: NSObject, FlutterPlugin {
     }
 
     private func isEnglish(_ text: String) -> Bool {
-        let range = NSRange(text.startIndex..., in: text)
-        return englishPattern.firstMatch(in: text, range: range) != nil
+        // Must contain only ASCII printable characters
+        guard text.allSatisfy({ $0.asciiValue != nil && $0.asciiValue! >= 32 && $0.asciiValue! <= 126 }) else {
+            return false
+        }
+
+        // Must have at least one letter or digit
+        guard text.contains(where: { $0.isLetter || $0.isNumber }) else {
+            return false
+        }
+
+        // For words with 4+ letters, must contain a vowel
+        let letters = text.filter { $0.isLetter }
+        if letters.count >= 4 {
+            let vowels = CharacterSet(charactersIn: "aeiouAEIOU")
+            let hasVowel = letters.unicodeScalars.contains(where: { vowels.contains($0) })
+            if !hasVowel { return false }
+        }
+
+        return true
     }
 
     private func recognizeText(from image: CGImage, result: @escaping FlutterResult) {
@@ -282,5 +462,64 @@ public class OcrPlugin: NSObject, FlutterPlugin {
         }
         guard let finalData = data else { return nil }
         return FlutterStandardTypedData(bytes: finalData)
+    }
+
+    private func extractFace(from image: CGImage, result: @escaping FlutterResult) {
+        let request = VNDetectFaceRectanglesRequest { request, error in
+            if let error = error {
+                result(FlutterError(code: "FACE_DETECTION_FAILED", message: error.localizedDescription, details: nil))
+                return
+            }
+
+            guard let faces = request.results as? [VNFaceObservation], !faces.isEmpty else {
+                result(nil)
+                return
+            }
+
+            // Get the largest face
+            let face = faces.max(by: { $0.boundingBox.width * $0.boundingBox.height < $1.boundingBox.width * $1.boundingBox.height })!
+            let box = face.boundingBox
+
+            let imageWidth = CGFloat(image.width)
+            let imageHeight = CGFloat(image.height)
+
+            // Convert normalized coords to pixel coords
+            let faceX = box.origin.x * imageWidth
+            let faceY = (1 - box.origin.y - box.height) * imageHeight
+            let faceW = box.width * imageWidth
+            let faceH = box.height * imageHeight
+
+            // Add padding
+            let padX = faceW * 0.2
+            let padY = faceH * 0.3
+            let cropRect = CGRect(
+                x: max(faceX - padX, 0),
+                y: max(faceY - padY, 0),
+                width: min(faceW + padX * 2, imageWidth),
+                height: min(faceH + padY * 2, imageHeight)
+            )
+
+            guard let cropped = image.cropping(to: cropRect) else {
+                result(nil)
+                return
+            }
+
+            let uiImage = UIImage(cgImage: cropped)
+            guard let jpegData = uiImage.jpegData(compressionQuality: 0.9) else {
+                result(nil)
+                return
+            }
+
+            result(FlutterStandardTypedData(bytes: jpegData))
+        }
+
+        let handler = VNImageRequestHandler(cgImage: image, options: [:])
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                try handler.perform([request])
+            } catch {
+                result(FlutterError(code: "FACE_DETECTION_FAILED", message: error.localizedDescription, details: nil))
+            }
+        }
     }
 }

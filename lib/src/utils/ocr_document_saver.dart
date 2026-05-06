@@ -135,6 +135,55 @@ class OcrDocumentSaver {
     return result ?? imageBytes;
   }
 
+  /// Extracts the face/photo from a document image (Aadhaar, PAN, etc.)
+  /// Uses native face detection (ML Kit on Android, Vision on iOS/macOS).
+  /// Returns cropped face image bytes, or null if no face found.
+  ///
+  /// Supported: Android, iOS, macOS.
+  /// Windows/Linux: returns null (face detection not available).
+  static Future<Uint8List?> extractFace(Uint8List imageBytes) async {
+    if (Platform.isWindows || Platform.isLinux) return null;
+    try {
+      final result = await _channel.invokeMethod<Uint8List>(
+        'extractFace',
+        {'imageBytes': imageBytes},
+      );
+      return result;
+    } on MissingPluginException {
+      return null;
+    } on PlatformException {
+      return null;
+    }
+  }
+
+  /// Extracts face from a file path.
+  /// Returns null if no face found or platform not supported.
+  static Future<Uint8List?> extractFaceFromPath(String imagePath) async {
+    if (Platform.isWindows || Platform.isLinux) return null;
+    final bytes = await File(imagePath).readAsBytes();
+    return extractFace(bytes);
+  }
+
+  /// Whether face extraction is supported on the current platform.
+  static bool get isFaceExtractionSupported =>
+      Platform.isAndroid || Platform.isIOS || Platform.isMacOS;
+
+  /// Corrects image orientation based on EXIF data.
+  /// Returns the image bytes with correct upright orientation.
+  /// On Windows/Linux, returns the original bytes unchanged.
+  static Future<Uint8List> correctOrientation(Uint8List imageBytes) async {
+    if (Platform.isWindows || Platform.isLinux) return imageBytes;
+    try {
+      final result = await _channel.invokeMethod<Uint8List>(
+        'correctOrientation',
+        {'imageBytes': imageBytes},
+      );
+      return result ?? imageBytes;
+    } catch (_) {
+      return imageBytes;
+    }
+  }
+
   static Future<File> _process(
     Uint8List imageBytes,
     Directory directory,

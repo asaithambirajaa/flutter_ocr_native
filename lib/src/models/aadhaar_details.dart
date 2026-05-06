@@ -35,6 +35,8 @@ class AadhaarDetails {
 
     final aadhaarPattern = RegExp(r'(?<!\d)(\d{4})[\s\-]+(\d{4})[\s\-]+(\d{4})(?!\d)');
     final aadhaarPatternNoSep = RegExp(r'(?<!\d)(\d{12})(?!\d)');
+    // Also match partial separators like "5689 23658955" or "56892365 8955"
+    final aadhaarPatternPartial = RegExp(r'(?<!\d)(\d{4,8})[\s\-]+(\d{4,8})(?!\d)');
     final dobPattern = RegExp(r'(\d{2}[/\-]\d{2}[/\-]\d{4})');
     final yearPattern = RegExp(r'(\d{4})');
     final genderPattern = RegExp(r'\b(Male|Female|MALE|FEMALE|Transgender)\b', caseSensitive: false);
@@ -65,6 +67,17 @@ class AadhaarDetails {
         aadhaarLineIdx = i;
         consumed.add(i);
         continue;
+      }
+      // Partial separator: "5689 23658955" or "56892365 8955"
+      if (aadhaarPatternPartial.hasMatch(line)) {
+        final match = aadhaarPatternPartial.firstMatch(line)!;
+        final combined = '${match.group(1)}${match.group(2)}';
+        if (combined.length == 12 && RegExp(r'^\d{12}$').hasMatch(combined)) {
+          aadhaarNumber = match.group(0);
+          aadhaarLineIdx = i;
+          consumed.add(i);
+          continue;
+        }
       }
 
       // DOB

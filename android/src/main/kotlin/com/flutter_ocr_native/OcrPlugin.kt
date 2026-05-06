@@ -8,7 +8,10 @@ import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.Rect
 import android.net.Uri
+import androidx.exifinterface.media.ExifInterface
 import com.google.mlkit.vision.common.InputImage
+import com.google.mlkit.vision.face.FaceDetection
+import com.google.mlkit.vision.face.FaceDetectorOptions
 import com.google.mlkit.vision.text.Text
 import com.google.mlkit.vision.text.TextRecognition
 import com.google.mlkit.vision.text.TextRecognizer
@@ -16,6 +19,7 @@ import com.google.mlkit.vision.text.latin.TextRecognizerOptions
 import io.flutter.embedding.engine.plugins.FlutterPlugin
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
+import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.File
 
@@ -110,6 +114,169 @@ class OcrPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
                 bitmap.recycle()
                 result.success(stream.toByteArray())
             }
+            "extractFace" -> {
+                val bytes = call.argument<ByteArray>("imageBytes")
+                if (bytes == null) {
+                    result.error("INVALID_ARG", "imageBytes is required", null)
+                    return
+                }
+                val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                if (bitmap == null) {
+                    result.error("DECODE_ERROR", "Could not decode image bytes", null)
+                    return
+                }
+                val image = InputImage.fromBitmap(bitmap, 0)
+                extractFaceFromImage(image, bitmap, result)
+            }
+            "cropImage" -> {
+                val bytes = call.argument<ByteArray>("imageBytes")
+                val x = call.argument<Int>("x") ?: 0
+                val y = call.argument<Int>("y") ?: 0
+                val width = call.argument<Int>("width") ?: 0
+                val height = call.argument<Int>("height") ?: 0
+
+                if (bytes == null || width <= 0 || height <= 0) {
+                    result.error("INVALID_ARG", "imageBytes, x, y, width, height required", null)
+                    return
+                }
+
+                val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                if (bitmap == null) {
+                    result.error("DECODE_ERROR", "Could not decode image", null)
+                    return
+                }
+
+                val safeX = x.coerceIn(0, bitmap.width - 1)
+                val safeY = y.coerceIn(0, bitmap.height - 1)
+                val safeW = width.coerceAtMost(bitmap.width - safeX)
+                val safeH = height.coerceAtMost(bitmap.height - safeY)
+
+                val cropped = Bitmap.createBitmap(bitmap, safeX, safeY, safeW, safeH)
+                val stream = ByteArrayOutputStream()
+                cropped.compress(Bitmap.CompressFormat.JPEG, 90, stream)
+                cropped.recycle()
+                bitmap.recycle()
+                result.success(stream.toByteArray())
+            }
+            "rotateImage" -> {
+                val bytes = call.argument<ByteArray>("imageBytes")
+                val degrees = call.argument<Int>("degrees") ?: 90
+
+                if (bytes == null) {
+                    result.error("INVALID_ARG", "imageBytes required", null)
+                    return
+                }
+
+                val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                if (bitmap == null) {
+                    result.error("DECODE_ERROR", "Could not decode image", null)
+                    return
+                }
+
+                val matrix = android.graphics.Matrix()
+                matrix.postRotate(degrees.toFloat())
+                val rotated = Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
+                val stream = ByteArrayOutputStream()
+                rotated.compress(Bitmap.CompressFormat.JPEG, 90, stream)
+                rotated.recycle()
+                bitmap.recycle()
+                result.success(stream.toByteArray())
+            }
+            "correctOrientation" -> {
+                val bytes = call.argument<ByteArray>("imageBytes")
+                if (bytes == null) {
+                    result.error("INVALID_ARG", "imageBytes required", null)
+                    return
+                }
+
+                val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                if (bitmap == null) {
+                    result.success(bytes)
+                    return
+                }
+
+                // First try EXIF
+                val exif = ExifInterface(ByteArrayInputStream(bytes))
+                val orientation = exif.getAttributeInt(
+                    ExifInterface.TAG_ORIENTATION,
+                    ExifInterface.ORIENTATION_NORMAL
+                )
+                val exifDegrees = when (orientation) {
+                    ExifInterface.ORIENTATION_ROTATE_90 -> 90f
+                    ExifInterface.ORIENTATION_ROTATE_180 -> 180f
+                    ExifInterface.ORIENTATION_ROTATE_270 -> 270f
+                    else -> 0f
+                }
+
+                if (exifDegrees != 0f) {
+                    val matrix = android.graphics.Matrix()
+                    matrix.postRotate(exifDegrees)
+                    val rotated = Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
+                    val stream = ByteArrayOutputStream()
+                    rotated.compress(Bitmap.CompressFormat.JPEG, 95, stream)
+                    rotated.recycle()
+                    bitmap.recycle()
+                    result.success(stream.toByteArray())
+                    return
+                }
+
+                // EXIF normal — use OCR to detect best rotation
+                val rotations = listOf(0f, 90f, 180f, 270f)
+                val rec = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
+                var bestDegrees = 0f
+                var bestConfidence = -1f
+                var pending = rotations.size
+
+                for (deg in rotations) {
+                    val testBitmap = if (deg == 0f) bitmap else {
+                        val m = android.graphics.Matrix()
+                        m.postRotate(deg)
+                        Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, m, true)
+                    }
+                    val input = InputImage.fromBitmap(testBitmap, 0)
+                    rec.process(input)
+                        .addOnSuccessListener { text ->
+                            val confidence = text.textBlocks.sumOf { block ->
+                                block.lines.sumOf { line ->
+                                    (line.confidence ?: 0f).toDouble() * line.text.length
+                                }
+                            }.toFloat()
+                            synchronized(this) {
+                                if (confidence > bestConfidence) {
+                                    bestConfidence = confidence
+                                    bestDegrees = deg
+                                }
+                                pending--
+                                if (pending == 0) {
+                                    if (bestDegrees == 0f) {
+                                        bitmap.recycle()
+                                        result.success(bytes)
+                                    } else {
+                                        val m = android.graphics.Matrix()
+                                        m.postRotate(bestDegrees)
+                                        val final_ = Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, m, true)
+                                        val stream = ByteArrayOutputStream()
+                                        final_.compress(Bitmap.CompressFormat.JPEG, 95, stream)
+                                        final_.recycle()
+                                        bitmap.recycle()
+                                        result.success(stream.toByteArray())
+                                    }
+                                }
+                            }
+                            if (deg != 0f) testBitmap.recycle()
+                        }
+                        .addOnFailureListener {
+                            synchronized(this) {
+                                pending--
+                                if (pending == 0) {
+                                    bitmap.recycle()
+                                    result.success(bytes)
+                                }
+                            }
+                            if (deg != 0f) testBitmap.recycle()
+                        }
+                }
+            }
             "dispose" -> {
                 recognizer?.close()
                 recognizer = null
@@ -138,7 +305,7 @@ class OcrPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
                             .filter { isEnglish(it.text) }
                             .map { element ->
                                 mapOf(
-                                    "text" to element.text,
+                                    "text" to extractEnglish(element.text),
                                     "boundingBox" to element.boundingBox?.let { rectToMap(it) },
                                     "confidence" to element.confidence
                                 )
@@ -352,7 +519,28 @@ class OcrPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
     }
 
     private fun isEnglish(text: String): Boolean {
-        return englishPattern.containsMatchIn(text)
+        val normalized = normalizeText(text)
+        if (normalized.isEmpty()) return false
+
+        val alphaNum = normalized.count { it.isLetterOrDigit() }
+        if (alphaNum == 0) return false
+
+        val letters = normalized.replace(Regex("[^A-Za-z]"), "")
+        if (letters.length >= 4 && !letters.contains(Regex("[aeiouAEIOU]"))) return false
+
+        return true
+    }
+
+    // Normalizes text: replaces Unicode lookalikes with ASCII, then strips remaining non-ASCII
+    private fun normalizeText(text: String): String {
+        // NFKD normalization converts all Unicode lookalikes to ASCII base forms
+        val normalized = java.text.Normalizer.normalize(text, java.text.Normalizer.Form.NFKD)
+        // Keep only ASCII printable characters
+        return normalized.replace(Regex("[^\\x20-\\x7E]"), "").trim()
+    }
+
+    private fun extractEnglish(text: String): String {
+        return normalizeText(text)
     }
 
     private fun burnWatermarkOnBitmap(
@@ -403,5 +591,49 @@ class OcrPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
             "width" to rect.width().toDouble(),
             "height" to rect.height().toDouble()
         )
+    }
+
+    private fun extractFaceFromImage(image: InputImage, bitmap: Bitmap, result: MethodChannel.Result) {
+        val options = FaceDetectorOptions.Builder()
+            .setPerformanceMode(FaceDetectorOptions.PERFORMANCE_MODE_ACCURATE)
+            .build()
+        val detector = FaceDetection.getClient(options)
+
+        detector.process(image)
+            .addOnSuccessListener { faces ->
+                if (faces.isEmpty()) {
+                    result.success(null)
+                    return@addOnSuccessListener
+                }
+
+                // Get the largest face (most likely the ID photo)
+                val face = faces.maxByOrNull { it.boundingBox.width() * it.boundingBox.height() }!!
+                val box = face.boundingBox
+
+                // Add padding around the face
+                val padX = (box.width() * 0.2).toInt()
+                val padY = (box.height() * 0.3).toInt()
+                val cropRect = Rect(
+                    (box.left - padX).coerceAtLeast(0),
+                    (box.top - padY).coerceAtLeast(0),
+                    (box.right + padX).coerceAtMost(bitmap.width),
+                    (box.bottom + padY).coerceAtMost(bitmap.height)
+                )
+
+                val cropped = Bitmap.createBitmap(
+                    bitmap, cropRect.left, cropRect.top,
+                    cropRect.width(), cropRect.height()
+                )
+
+                val stream = ByteArrayOutputStream()
+                cropped.compress(Bitmap.CompressFormat.JPEG, 90, stream)
+                cropped.recycle()
+
+                result.success(stream.toByteArray())
+            }
+            .addOnFailureListener { e ->
+                result.error("FACE_DETECTION_FAILED", e.message, null)
+            }
+            .addOnCompleteListener { detector.close() }
     }
 }

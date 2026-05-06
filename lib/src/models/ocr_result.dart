@@ -2,6 +2,7 @@ import 'dart:typed_data';
 import 'dart:ui';
 
 import '../validators/document_number_validator.dart';
+import '../validators/document_type_detector.dart';
 
 class OcrResult {
   final String text;
@@ -16,6 +17,9 @@ class OcrResult {
 
   /// Original unmasked text — used internally for validation.
   final String _rawText;
+
+  /// The original unmasked text — use for validation and number extraction.
+  String get rawText => _rawText;
 
   OcrResult({
     required this.text,
@@ -44,6 +48,12 @@ class OcrResult {
   bool get isEmpty => text.isEmpty;
   bool get isNotEmpty => text.isNotEmpty;
 
+  /// Auto-detected document type based on OCR text content.
+  DetectedDocType get docType => DocumentTypeDetector.detect(_rawText);
+
+  /// Human-readable label for the detected document type.
+  String get docTypeLabel => DocumentTypeDetector.label(docType);
+
   /// Whether an Aadhaar number was detected and the image was masked.
   bool get hasAadhaar => maskedImageBytes != null;
 
@@ -53,10 +63,18 @@ class OcrResult {
 
   /// Aadhaar validation error message. Null if valid or not found.
   String? get aadhaarError {
+    // Try with separators
     final match = RegExp(r'(?<!\d)(\d{4})[\s\-]+(\d{4})[\s\-]+(\d{4})(?!\d)').firstMatch(_rawText);
-    if (match == null) return 'Aadhaar number not found';
-    final number = '${match.group(1)}${match.group(2)}${match.group(3)}';
-    return DocumentNumberValidator.validateAadhaar(number);
+    if (match != null) {
+      final number = '${match.group(1)}${match.group(2)}${match.group(3)}';
+      return DocumentNumberValidator.validateAadhaar(number);
+    }
+    // Try without separators
+    final noSepMatch = RegExp(r'(?<!\d)(\d{12})(?!\d)').firstMatch(_rawText);
+    if (noSepMatch != null) {
+      return DocumentNumberValidator.validateAadhaar(noSepMatch.group(1)!);
+    }
+    return 'Aadhaar number not found';
   }
 
   /// Whether a valid PAN number is present in the text.
@@ -64,7 +82,7 @@ class OcrResult {
 
   /// PAN validation error message. Null if valid or not found.
   String? get panError {
-    final match = RegExp(r'[A-Z]{3}[A-Z][A-Z]\d{4}[A-Z]').firstMatch(_rawText.toUpperCase());
+    final match = RegExp(r'[A-Z]{3}[CPFHATBLGJ][A-Z]\d{4}[A-Z]').firstMatch(_rawText.toUpperCase());
     if (match == null) return 'PAN number not found';
     return DocumentNumberValidator.validatePAN(match.group(0)!);
   }
@@ -169,16 +187,29 @@ Rect _parseRect(dynamic map) {
 
 // Matches exactly 3 groups of 4 digits — not part of a longer number sequence
 final _aadhaarPattern = RegExp(r'(?<!\d)(\d{4})([\s\-]+)(\d{4})([\s\-]+)(\d{4})(?!\d)');
+// Matches 12 consecutive digits without separators
+final _aadhaarPatternNoSep = RegExp(r'(?<!\d)(\d{12})(?!\d)');
 
 String _maskAadhaarInText(String text) {
-  return text.replaceAllMapped(_aadhaarPattern, (m) {
+  // Mask with separators
+  var masked = text.replaceAllMapped(_aadhaarPattern, (m) {
     return 'XXXX${m.group(2)}XXXX${m.group(4)}${m.group(5)}';
   });
+  // Mask without separators (keep last 4 visible)
+  if (masked == text) {
+    masked = text.replaceAllMapped(_aadhaarPatternNoSep, (m) {
+      final digits = m.group(1)!;
+      return 'XXXXXXXX${digits.substring(8)}';
+    });
+  }
+  return masked;
 }
 
 OcrResult _maskAadhaar(OcrResult result) {
   final match = _aadhaarPattern.firstMatch(result.text);
-  final last4 = match?.group(5);
+  final noSepMatch = match == null ? _aadhaarPatternNoSep.firstMatch(result.text) : null;
+  final last4 = match?.group(5)
+      ?? noSepMatch?.group(1)?.substring(8);
 
   return OcrResult(
     text: _maskAadhaarInText(result.text),
