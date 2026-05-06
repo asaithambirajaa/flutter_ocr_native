@@ -267,6 +267,7 @@ class DocumentDetails {
       docType: DetectedDocType.cheque,
       documentNumber: details.accountNumber,
       name: details.payeeName,
+      address: details.address,
       isValid: isValid,
       validationError: isValid ? null : 'No valid cheque details found',
       extraFields: {

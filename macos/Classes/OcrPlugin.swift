@@ -134,18 +134,41 @@ public class OcrPlugin: NSObject, FlutterPlugin {
                 return
             }
 
-            let rotations: [Int] = [0, 90, 180, 270]
-            var bestDegrees = 0
-            var bestScore: Float = -1
-            let group = DispatchGroup()
-            let lock = NSLock()
+            // First check if original orientation is already readable
+            let originalRequest = VNRecognizeTextRequest()
+            originalRequest.recognitionLevel = .fast
+            let originalHandler = VNImageRequestHandler(cgImage: cgBase, options: [:])
 
-            for deg in rotations {
-                group.enter()
-                let testImage: CGImage
-                if deg == 0 {
-                    testImage = cgBase
-                } else {
+            DispatchQueue.global(qos: .userInitiated).async {
+                try? originalHandler.perform([originalRequest])
+                let originalObs = originalRequest.results as? [VNRecognizedTextObservation] ?? []
+                let originalScore = originalObs.reduce(Float(0)) { sum, obs in
+                    sum + obs.confidence * Float(obs.topCandidates(1).first?.string.count ?? 0)
+                }
+
+                // If original has good readable text, keep it
+                if originalObs.count >= 2 && originalScore > 5.0 {
+                    DispatchQueue.main.async {
+                        guard let tiff = nsImage.tiffRepresentation,
+                              let bmp = NSBitmapImageRep(data: tiff),
+                              let jpeg = bmp.representation(using: .jpeg, properties: [.compressionFactor: 0.95]) else {
+                            result(FlutterStandardTypedData(bytes: bytes.data))
+                            return
+                        }
+                        result(FlutterStandardTypedData(bytes: jpeg))
+                    }
+                    return
+                }
+
+                // Original not readable — try other rotations
+                let otherRotations: [Int] = [90, 180, 270]
+                var bestDegrees = 0
+                var bestScore = originalScore
+                let group = DispatchGroup()
+                let lock = NSLock()
+
+                for deg in otherRotations {
+                    group.enter()
                     let radians = CGFloat(deg) * .pi / 180.0
                     let w = CGFloat(cgBase.width)
                     let h = CGFloat(cgBase.height)
@@ -163,30 +186,25 @@ public class OcrPlugin: NSObject, FlutterPlugin {
                         group.leave()
                         continue
                     }
-                    testImage = rotated
-                }
 
-                let request = VNRecognizeTextRequest { req, _ in
-                    let observations = req.results as? [VNRecognizedTextObservation] ?? []
-                    let score = observations.reduce(Float(0)) { sum, obs in
-                        sum + obs.confidence * Float(obs.topCandidates(1).first?.string.count ?? 0)
+                    let request = VNRecognizeTextRequest { req, _ in
+                        let observations = req.results as? [VNRecognizedTextObservation] ?? []
+                        let score = observations.reduce(Float(0)) { sum, obs in
+                            sum + obs.confidence * Float(obs.topCandidates(1).first?.string.count ?? 0)
+                        }
+                        lock.lock()
+                        if score > bestScore {
+                            bestScore = score
+                            bestDegrees = deg
+                        }
+                        lock.unlock()
+                        group.leave()
                     }
-                    lock.lock()
-                    if score > bestScore {
-                        bestScore = score
-                        bestDegrees = deg
-                    }
-                    lock.unlock()
-                    group.leave()
-                }
-                request.recognitionLevel = .fast
-                let handler = VNImageRequestHandler(cgImage: testImage, options: [:])
-                DispatchQueue.global(qos: .userInitiated).async {
+                    request.recognitionLevel = .fast
+                    let handler = VNImageRequestHandler(cgImage: rotated, options: [:])
                     try? handler.perform([request])
                 }
-            }
 
-            DispatchQueue.global(qos: .userInitiated).async {
                 group.wait()
                 DispatchQueue.main.async {
                     if bestDegrees == 0 {
@@ -385,7 +403,21 @@ public class OcrPlugin: NSObject, FlutterPlugin {
 
     private func detectPrinted(observations: [VNRecognizedTextObservation]) -> Bool {
         if observations.isEmpty { return false }
-        let confidences = observations.compactMap { $0.topCandidates(1).first?.confidence }
+
+        // Exclude MICR-like observations: bottom of image, mostly digits, low confidence
+        let filtered = observations.filter { obs in
+            let isAtBottom = obs.boundingBox.origin.y < 0.25
+            let text = obs.topCandidates(1).first?.string ?? ""
+            let digitRatio = text.isEmpty ? 0.0 : Double(text.filter { $0.isNumber }.count) / Double(text.count)
+            let isMostlyDigits = digitRatio > 0.6
+            let confidence = obs.topCandidates(1).first?.confidence ?? 1.0
+            let isLowConf = confidence < 0.5
+            return !(isAtBottom && isMostlyDigits && isLowConf)
+        }
+
+        if filtered.isEmpty { return true }
+
+        let confidences = filtered.compactMap { $0.topCandidates(1).first?.confidence }
         if confidences.isEmpty { return true }
         let avg = Double(confidences.reduce(0, +)) / Double(confidences.count)
         let lowCount = confidences.filter { $0 < 0.5 }.count

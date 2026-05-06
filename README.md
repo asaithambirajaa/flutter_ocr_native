@@ -35,7 +35,7 @@ A Flutter plugin for extracting text from images using native on-device OCR engi
 
 ```yaml
 dependencies:
-  flutter_ocr_native: ^0.2.0
+  flutter_ocr_native: ^0.2.1
 ```
 
 ### Android

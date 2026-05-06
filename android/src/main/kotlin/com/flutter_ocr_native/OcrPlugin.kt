@@ -220,62 +220,83 @@ class OcrPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
                     return
                 }
 
-                // EXIF normal — use OCR to detect best rotation
-                val rotations = listOf(0f, 90f, 180f, 270f)
+                // EXIF normal — first check if original orientation is readable
                 val rec = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
-                var bestDegrees = 0f
-                var bestConfidence = -1f
-                var pending = rotations.size
+                val originalInput = InputImage.fromBitmap(bitmap, 0)
+                rec.process(originalInput)
+                    .addOnSuccessListener { originalText ->
+                        val originalScore = originalText.textBlocks.sumOf { block ->
+                            block.lines.sumOf { line ->
+                                (line.confidence ?: 0f).toDouble() * line.text.length
+                            }
+                        }.toFloat()
 
-                for (deg in rotations) {
-                    val testBitmap = if (deg == 0f) bitmap else {
-                        val m = android.graphics.Matrix()
-                        m.postRotate(deg)
-                        Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, m, true)
-                    }
-                    val input = InputImage.fromBitmap(testBitmap, 0)
-                    rec.process(input)
-                        .addOnSuccessListener { text ->
-                            val confidence = text.textBlocks.sumOf { block ->
-                                block.lines.sumOf { line ->
-                                    (line.confidence ?: 0f).toDouble() * line.text.length
-                                }
-                            }.toFloat()
-                            synchronized(this) {
-                                if (confidence > bestConfidence) {
-                                    bestConfidence = confidence
-                                    bestDegrees = deg
-                                }
-                                pending--
-                                if (pending == 0) {
-                                    if (bestDegrees == 0f) {
-                                        bitmap.recycle()
-                                        result.success(bytes)
-                                    } else {
-                                        val m = android.graphics.Matrix()
-                                        m.postRotate(bestDegrees)
-                                        val final_ = Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, m, true)
-                                        val stream = ByteArrayOutputStream()
-                                        final_.compress(Bitmap.CompressFormat.JPEG, 95, stream)
-                                        final_.recycle()
-                                        bitmap.recycle()
-                                        result.success(stream.toByteArray())
+                        // If original has good readable text, keep it
+                        val hasGoodText = originalText.textBlocks.size >= 2 && originalScore > 5f
+                        if (hasGoodText) {
+                            bitmap.recycle()
+                            result.success(bytes)
+                            return@addOnSuccessListener
+                        }
+
+                        // Original not readable — try other rotations
+                        val otherRotations = listOf(90f, 180f, 270f)
+                        var bestDegrees = 0f
+                        var bestConfidence = originalScore
+                        var pending = otherRotations.size
+
+                        for (deg in otherRotations) {
+                            val m = android.graphics.Matrix()
+                            m.postRotate(deg)
+                            val testBitmap = Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, m, true)
+                            val input = InputImage.fromBitmap(testBitmap, 0)
+                            rec.process(input)
+                                .addOnSuccessListener { text ->
+                                    val confidence = text.textBlocks.sumOf { block ->
+                                        block.lines.sumOf { line ->
+                                            (line.confidence ?: 0f).toDouble() * line.text.length
+                                        }
+                                    }.toFloat()
+                                    synchronized(this) {
+                                        if (confidence > bestConfidence) {
+                                            bestConfidence = confidence
+                                            bestDegrees = deg
+                                        }
+                                        pending--
+                                        if (pending == 0) {
+                                            if (bestDegrees == 0f) {
+                                                bitmap.recycle()
+                                                result.success(bytes)
+                                            } else {
+                                                val fm = android.graphics.Matrix()
+                                                fm.postRotate(bestDegrees)
+                                                val final_ = Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, fm, true)
+                                                val stream = ByteArrayOutputStream()
+                                                final_.compress(Bitmap.CompressFormat.JPEG, 95, stream)
+                                                final_.recycle()
+                                                bitmap.recycle()
+                                                result.success(stream.toByteArray())
+                                            }
+                                        }
                                     }
+                                    testBitmap.recycle()
                                 }
-                            }
-                            if (deg != 0f) testBitmap.recycle()
-                        }
-                        .addOnFailureListener {
-                            synchronized(this) {
-                                pending--
-                                if (pending == 0) {
-                                    bitmap.recycle()
-                                    result.success(bytes)
+                                .addOnFailureListener {
+                                    synchronized(this) {
+                                        pending--
+                                        if (pending == 0) {
+                                            bitmap.recycle()
+                                            result.success(bytes)
+                                        }
+                                    }
+                                    testBitmap.recycle()
                                 }
-                            }
-                            if (deg != 0f) testBitmap.recycle()
                         }
-                }
+                    }
+                    .addOnFailureListener {
+                        bitmap.recycle()
+                        result.success(bytes)
+                    }
             }
             "dispose" -> {
                 recognizer?.close()
@@ -503,7 +524,22 @@ class OcrPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
 
         if (allElements.isEmpty()) return false
 
-        val confidences = allElements.mapNotNull { it.confidence }
+        // Find image bottom boundary from all bounding boxes
+        val maxBottom = allElements.mapNotNull { it.boundingBox?.bottom }.maxOrNull() ?: 0
+        val bottomThreshold = maxBottom * 0.75
+
+        // Exclude MICR-like elements: mostly digits, low confidence, at bottom of image
+        val filteredElements = allElements.filter { element ->
+            val box = element.boundingBox
+            val isAtBottom = box != null && box.top > bottomThreshold
+            val isMostlyDigits = element.text.count { it.isDigit() } > element.text.length * 0.6
+            val isLowConf = (element.confidence ?: 1f) < 0.5f
+            !(isAtBottom && isMostlyDigits && isLowConf)
+        }
+
+        if (filteredElements.isEmpty()) return true
+
+        val confidences = filteredElements.mapNotNull { it.confidence }
         if (confidences.isEmpty()) return true
 
         val avgConfidence = confidences.average()

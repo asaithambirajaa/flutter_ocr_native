@@ -1,3 +1,11 @@
+## 0.2.1
+
+* **Smart auto-orientation** — only rotates if original is unreadable; keeps already-readable images untouched
+* **Cheque MICR fix** — MICR line (special font at bottom) no longer triggers handwriting rejection
+* **Cheque parser rewrite** — case-insensitive IFSC extraction, spaced account numbers, 30+ bank name patterns, address extraction from branch lines
+* Added `address` field to `ChequeDetails` and `DocumentDetails` for cheques
+* Improved `detectPrinted` on all platforms — excludes low-confidence numeric elements at image bottom from scoring
+
 ## 0.2.0
 
 * **Auto-orientation correction** — detects correct image rotation using OCR confidence scoring across all 4 rotations (0°, 90°, 180°, 270°). Works even without EXIF data
