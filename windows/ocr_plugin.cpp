@@ -18,6 +18,7 @@
 #include <fstream>
 #include <memory>
 #include <regex>
+#include <thread>
 #include <string>
 #include <vector>
 
@@ -180,33 +181,55 @@ void FlutterOcrNativePlugin::RecognizeFromPath(
 void FlutterOcrNativePlugin::RecognizeFromBytes(
     const std::vector<uint8_t>& bytes,
     std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>> result) {
-  if (!ocr_engine_) {
-    result->Error("NOT_INITIALIZED", "OCR engine not available");
-    return;
-  }
-
   try {
-    // Create SoftwareBitmap from bytes via InMemoryRandomAccessStream
-    auto stream = streams::InMemoryRandomAccessStream();
-    auto writer = streams::DataWriter(stream.GetOutputStreamAt(0));
-    writer.WriteBytes(winrt::array_view<const uint8_t>(bytes));
-    writer.StoreAsync().get();
-    writer.FlushAsync().get();
-    stream.Seek(0);
+    flutter::EncodableMap response;
+    std::exception_ptr thread_error;
 
-    auto decoder = imaging::BitmapDecoder::CreateAsync(stream).get();
-    auto bitmap = decoder.GetSoftwareBitmapAsync().get();
+    std::thread worker([&] {
+      try {
+        winrt::init_apartment(winrt::apartment_type::multi_threaded);
 
-    // Convert to BGRA8 if needed (OCR requires this)
-    if (bitmap.BitmapPixelFormat() != imaging::BitmapPixelFormat::Bgra8 ||
-        bitmap.BitmapAlphaMode() != imaging::BitmapAlphaMode::Premultiplied) {
-      bitmap = imaging::SoftwareBitmap::Convert(bitmap, imaging::BitmapPixelFormat::Bgra8,
-                                        imaging::BitmapAlphaMode::Premultiplied);
+        // Windows OCR can still return no text on rotated or skewed card photos.
+        // If this regresses again, try orientation retries before changing the parser.
+        auto stream = streams::InMemoryRandomAccessStream();
+        auto writer = streams::DataWriter(stream.GetOutputStreamAt(0));
+        writer.WriteBytes(winrt::array_view<const uint8_t>(bytes));
+        writer.StoreAsync().get();
+        writer.FlushAsync().get();
+        stream.Seek(0);
+
+        auto decoder = imaging::BitmapDecoder::CreateAsync(stream).get();
+        auto bitmap = decoder.GetSoftwareBitmapAsync().get();
+
+        if (bitmap.BitmapPixelFormat() != imaging::BitmapPixelFormat::Bgra8 ||
+            bitmap.BitmapAlphaMode() != imaging::BitmapAlphaMode::Premultiplied) {
+          bitmap = imaging::SoftwareBitmap::Convert(
+              bitmap, imaging::BitmapPixelFormat::Bgra8,
+              imaging::BitmapAlphaMode::Premultiplied);
+        }
+
+        auto ocr_engine = ocr::OcrEngine::TryCreateFromLanguage(
+            winrt::Windows::Globalization::Language(L"en-US"));
+        if (!ocr_engine) {
+          ocr_engine = ocr::OcrEngine::TryCreateFromUserProfileLanguages();
+        }
+        if (!ocr_engine) {
+          throw winrt::hresult_error(E_FAIL, L"OCR engine not available");
+        }
+
+        auto ocr_result = ocr_engine.RecognizeAsync(bitmap).get();
+        response = ProcessOcrResult(ocr_result, bytes);
+      } catch (...) {
+        thread_error = std::current_exception();
+      }
+    });
+
+    worker.join();
+
+    if (thread_error) {
+      std::rethrow_exception(thread_error);
     }
 
-    // Run OCR
-    auto ocr_result = ocr_engine_.RecognizeAsync(bitmap).get();
-    auto response = ProcessOcrResult(ocr_result, bytes);
     result->Success(flutter::EncodableValue(response));
   } catch (const winrt::hresult_error& e) {
     result->Error("RECOGNITION_FAILED", winrt::to_string(e.message()));
