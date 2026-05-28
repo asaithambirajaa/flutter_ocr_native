@@ -8,6 +8,7 @@
 #include <winrt/Windows.Foundation.h>
 #include <winrt/Windows.Foundation.Collections.h>
 #include <winrt/Windows.Graphics.Imaging.h>
+#include <winrt/Windows.Globalization.h>
 #include <winrt/Windows.Media.Ocr.h>
 #include <winrt/Windows.Storage.Streams.h>
 
@@ -17,16 +18,15 @@
 #include <fstream>
 #include <memory>
 #include <regex>
+#include <thread>
 #include <string>
 #include <vector>
 
 #pragma comment(lib, "gdiplus.lib")
 
-using namespace winrt;
-using namespace Windows::Foundation;
-using namespace Windows::Graphics::Imaging;
-using namespace Windows::Media::Ocr;
-using namespace Windows::Storage::Streams;
+namespace imaging = winrt::Windows::Graphics::Imaging;
+namespace ocr = winrt::Windows::Media::Ocr;
+namespace streams = winrt::Windows::Storage::Streams;
 
 namespace {
 
@@ -61,20 +61,20 @@ class FlutterOcrNativePlugin : public flutter::Plugin {
       int quality,
       std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>> result);
 
-  flutter::EncodableMap ProcessOcrResult(const OcrResult& ocr_result,
+  flutter::EncodableMap ProcessOcrResult(const ocr::OcrResult& ocr_result,
                                           const std::vector<uint8_t>& image_bytes);
 
   std::vector<uint8_t> MaskAadhaarOnImage(const std::vector<uint8_t>& image_bytes,
-                                           const OcrResult& ocr_result);
+                                           const ocr::OcrResult& ocr_result);
 
   std::vector<uint8_t> CompressToJpeg(const std::vector<uint8_t>& bytes, int quality);
   std::vector<uint8_t> DrawWatermark(const std::vector<uint8_t>& bytes,
                                       const flutter::EncodableMap& lines, int quality);
 
   bool IsEnglish(const std::wstring& text);
-  bool IsPrinted(const OcrResult& ocr_result);
+  bool IsPrinted(const ocr::OcrResult& ocr_result);
 
-  OcrEngine ocr_engine_{nullptr};
+  ocr::OcrEngine ocr_engine_{nullptr};
   ULONG_PTR gdiplus_token_{0};
 };
 
@@ -95,17 +95,17 @@ void FlutterOcrNativePlugin::RegisterWithRegistrar(
 }
 
 FlutterOcrNativePlugin::FlutterOcrNativePlugin() {
-  init_apartment();
+  winrt::init_apartment();
 
   // Initialize GDI+
   Gdiplus::GdiplusStartupInput gdiplus_input;
   Gdiplus::GdiplusStartup(&gdiplus_token_, &gdiplus_input, nullptr);
 
   // Create OCR engine for English
-  ocr_engine_ = OcrEngine::TryCreateFromLanguage(
-      Windows::Globalization::Language(L"en-US"));
+  ocr_engine_ = ocr::OcrEngine::TryCreateFromLanguage(
+      winrt::Windows::Globalization::Language(L"en-US"));
   if (!ocr_engine_) {
-    ocr_engine_ = OcrEngine::TryCreateFromUserProfileLanguages();
+    ocr_engine_ = ocr::OcrEngine::TryCreateFromUserProfileLanguages();
   }
 }
 
@@ -181,35 +181,57 @@ void FlutterOcrNativePlugin::RecognizeFromPath(
 void FlutterOcrNativePlugin::RecognizeFromBytes(
     const std::vector<uint8_t>& bytes,
     std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>> result) {
-  if (!ocr_engine_) {
-    result->Error("NOT_INITIALIZED", "OCR engine not available");
-    return;
-  }
-
   try {
-    // Create SoftwareBitmap from bytes via InMemoryRandomAccessStream
-    auto stream = InMemoryRandomAccessStream();
-    auto writer = DataWriter(stream.GetOutputStreamAt(0));
-    writer.WriteBytes(array_view<const uint8_t>(bytes));
-    writer.StoreAsync().get();
-    writer.FlushAsync().get();
-    stream.Seek(0);
+    flutter::EncodableMap response;
+    std::exception_ptr thread_error;
 
-    auto decoder = BitmapDecoder::CreateAsync(stream).get();
-    auto bitmap = decoder.GetSoftwareBitmapAsync().get();
+    std::thread worker([&] {
+      try {
+        winrt::init_apartment(winrt::apartment_type::multi_threaded);
 
-    // Convert to BGRA8 if needed (OCR requires this)
-    if (bitmap.BitmapPixelFormat() != BitmapPixelFormat::Bgra8 ||
-        bitmap.BitmapAlphaMode() != BitmapAlphaMode::Premultiplied) {
-      bitmap = SoftwareBitmap::Convert(bitmap, BitmapPixelFormat::Bgra8,
-                                        BitmapAlphaMode::Premultiplied);
+        // Windows OCR can still return no text on rotated or skewed card photos.
+        // If this regresses again, try orientation retries before changing the parser.
+        auto stream = streams::InMemoryRandomAccessStream();
+        auto writer = streams::DataWriter(stream.GetOutputStreamAt(0));
+        writer.WriteBytes(winrt::array_view<const uint8_t>(bytes));
+        writer.StoreAsync().get();
+        writer.FlushAsync().get();
+        stream.Seek(0);
+
+        auto decoder = imaging::BitmapDecoder::CreateAsync(stream).get();
+        auto bitmap = decoder.GetSoftwareBitmapAsync().get();
+
+        if (bitmap.BitmapPixelFormat() != imaging::BitmapPixelFormat::Bgra8 ||
+            bitmap.BitmapAlphaMode() != imaging::BitmapAlphaMode::Premultiplied) {
+          bitmap = imaging::SoftwareBitmap::Convert(
+              bitmap, imaging::BitmapPixelFormat::Bgra8,
+              imaging::BitmapAlphaMode::Premultiplied);
+        }
+
+        auto ocr_engine = ocr::OcrEngine::TryCreateFromLanguage(
+            winrt::Windows::Globalization::Language(L"en-US"));
+        if (!ocr_engine) {
+          ocr_engine = ocr::OcrEngine::TryCreateFromUserProfileLanguages();
+        }
+        if (!ocr_engine) {
+          throw winrt::hresult_error(E_FAIL, L"OCR engine not available");
+        }
+
+        auto ocr_result = ocr_engine.RecognizeAsync(bitmap).get();
+        response = ProcessOcrResult(ocr_result, bytes);
+      } catch (...) {
+        thread_error = std::current_exception();
+      }
+    });
+
+    worker.join();
+
+    if (thread_error) {
+      std::rethrow_exception(thread_error);
     }
 
-    // Run OCR
-    auto ocr_result = ocr_engine_.RecognizeAsync(bitmap).get();
-    auto response = ProcessOcrResult(ocr_result, bytes);
     result->Success(flutter::EncodableValue(response));
-  } catch (const hresult_error& e) {
+  } catch (const winrt::hresult_error& e) {
     result->Error("RECOGNITION_FAILED", winrt::to_string(e.message()));
   } catch (const std::exception& e) {
     result->Error("RECOGNITION_FAILED", e.what());
@@ -217,7 +239,7 @@ void FlutterOcrNativePlugin::RecognizeFromBytes(
 }
 
 flutter::EncodableMap FlutterOcrNativePlugin::ProcessOcrResult(
-    const OcrResult& ocr_result, const std::vector<uint8_t>& image_bytes) {
+    const ocr::OcrResult& ocr_result, const std::vector<uint8_t>& image_bytes) {
   std::string full_text;
   flutter::EncodableList blocks;
   std::regex english_pattern("[A-Za-z0-9]");
@@ -295,7 +317,7 @@ flutter::EncodableMap FlutterOcrNativePlugin::ProcessOcrResult(
 }
 
 std::vector<uint8_t> FlutterOcrNativePlugin::MaskAadhaarOnImage(
-    const std::vector<uint8_t>& image_bytes, const OcrResult& ocr_result) {
+    const std::vector<uint8_t>& image_bytes, const ocr::OcrResult& ocr_result) {
   // Find Aadhaar pattern in OCR lines
   std::regex aadhaar_pattern("(\\d{4})[\\s\\-]*(\\d{4})[\\s\\-]*(\\d{4})");
   std::smatch match;
@@ -462,7 +484,7 @@ std::vector<uint8_t> FlutterOcrNativePlugin::DrawWatermark(
   int img_height = image->GetHeight();
 
   // Calculate watermark dimensions
-  float font_size = std::max(img_width * 0.03f, 36.0f);
+  float font_size = (std::max)(img_width * 0.03f, 36.0f);
   float line_height = font_size * 1.5f;
   float pad_h = img_width * 0.02f;
   float pad_v = img_width * 0.015f;
