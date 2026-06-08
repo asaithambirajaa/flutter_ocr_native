@@ -4,10 +4,17 @@
 #include <flutter/plugin_registrar_windows.h>
 #include <flutter/standard_method_codec.h>
 
+// Prevent Windows min/max macros from interfering with std::min/std::max
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+
 #include <windows.h>
+
 #include <winrt/Windows.Foundation.h>
 #include <winrt/Windows.Foundation.Collections.h>
 #include <winrt/Windows.Data.Pdf.h>
+#include <winrt/Windows.Globalization.h>
 #include <winrt/Windows.Graphics.Imaging.h>
 #include <winrt/Windows.Media.Ocr.h>
 #include <winrt/Windows.Storage.Streams.h>
@@ -24,12 +31,13 @@
 
 #pragma comment(lib, "gdiplus.lib")
 
-using namespace winrt;
-using namespace Windows::Foundation;
-using namespace Windows::Data::Pdf;
-using namespace Windows::Graphics::Imaging;
-using namespace Windows::Media::Ocr;
-using namespace Windows::Storage::Streams;
+// Use namespace aliases to avoid IUnknown ambiguity between COM and WinRT
+namespace wf = winrt::Windows::Foundation;
+namespace pdf = winrt::Windows::Data::Pdf;
+namespace imaging = winrt::Windows::Graphics::Imaging;
+namespace ocr = winrt::Windows::Media::Ocr;
+namespace streams = winrt::Windows::Storage::Streams;
+namespace globalization = winrt::Windows::Globalization;
 
 namespace {
 
@@ -74,20 +82,17 @@ class FlutterOcrNativePlugin : public flutter::Plugin {
       const std::vector<uint8_t>& bytes,
       std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>> result);
 
-  flutter::EncodableMap ProcessOcrResult(const OcrResult& ocr_result,
+  flutter::EncodableMap ProcessOcrResult(const ocr::OcrResult& ocr_result,
                                           const std::vector<uint8_t>& image_bytes);
 
   std::vector<uint8_t> MaskAadhaarOnImage(const std::vector<uint8_t>& image_bytes,
-                                           const OcrResult& ocr_result);
+                                           const ocr::OcrResult& ocr_result);
 
   std::vector<uint8_t> CompressToJpeg(const std::vector<uint8_t>& bytes, int quality);
   std::vector<uint8_t> DrawWatermark(const std::vector<uint8_t>& bytes,
                                       const flutter::EncodableMap& lines, int quality);
 
-  bool IsEnglish(const std::wstring& text);
-  bool IsPrinted(const OcrResult& ocr_result);
-
-  OcrEngine ocr_engine_{nullptr};
+  ocr::OcrEngine ocr_engine_{nullptr};
   ULONG_PTR gdiplus_token_{0};
 };
 
@@ -108,17 +113,17 @@ void FlutterOcrNativePlugin::RegisterWithRegistrar(
 }
 
 FlutterOcrNativePlugin::FlutterOcrNativePlugin() {
-  init_apartment();
+  winrt::init_apartment();
 
   // Initialize GDI+
   Gdiplus::GdiplusStartupInput gdiplus_input;
   Gdiplus::GdiplusStartup(&gdiplus_token_, &gdiplus_input, nullptr);
 
   // Create OCR engine for English
-  ocr_engine_ = OcrEngine::TryCreateFromLanguage(
-      Windows::Globalization::Language(L"en-US"));
+  ocr_engine_ = ocr::OcrEngine::TryCreateFromLanguage(
+      globalization::Language(L"en-US"));
   if (!ocr_engine_) {
-    ocr_engine_ = OcrEngine::TryCreateFromUserProfileLanguages();
+    ocr_engine_ = ocr::OcrEngine::TryCreateFromUserProfileLanguages();
   }
 }
 
@@ -192,7 +197,6 @@ void FlutterOcrNativePlugin::HandleMethodCall(
 void FlutterOcrNativePlugin::RecognizeFromPath(
     const std::string& path,
     std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>> result) {
-  // Read file into bytes
   std::ifstream file(path, std::ios::binary | std::ios::ate);
   if (!file.is_open()) {
     result->Error("INVALID_ARG", "Could not open file: " + path);
@@ -216,29 +220,27 @@ void FlutterOcrNativePlugin::RecognizeFromBytes(
   }
 
   try {
-    // Create SoftwareBitmap from bytes via InMemoryRandomAccessStream
-    auto stream = InMemoryRandomAccessStream();
-    auto writer = DataWriter(stream.GetOutputStreamAt(0));
-    writer.WriteBytes(array_view<const uint8_t>(bytes));
+    auto stream = streams::InMemoryRandomAccessStream();
+    auto writer = streams::DataWriter(stream.GetOutputStreamAt(0));
+    writer.WriteBytes(winrt::array_view<const uint8_t>(bytes));
     writer.StoreAsync().get();
     writer.FlushAsync().get();
+    writer.DetachStream();
     stream.Seek(0);
 
-    auto decoder = BitmapDecoder::CreateAsync(stream).get();
+    auto decoder = imaging::BitmapDecoder::CreateAsync(stream).get();
     auto bitmap = decoder.GetSoftwareBitmapAsync().get();
 
-    // Convert to BGRA8 if needed (OCR requires this)
-    if (bitmap.BitmapPixelFormat() != BitmapPixelFormat::Bgra8 ||
-        bitmap.BitmapAlphaMode() != BitmapAlphaMode::Premultiplied) {
-      bitmap = SoftwareBitmap::Convert(bitmap, BitmapPixelFormat::Bgra8,
-                                        BitmapAlphaMode::Premultiplied);
+    if (bitmap.BitmapPixelFormat() != imaging::BitmapPixelFormat::Bgra8 ||
+        bitmap.BitmapAlphaMode() != imaging::BitmapAlphaMode::Premultiplied) {
+      bitmap = imaging::SoftwareBitmap::Convert(bitmap, imaging::BitmapPixelFormat::Bgra8,
+                                                 imaging::BitmapAlphaMode::Premultiplied);
     }
 
-    // Run OCR
     auto ocr_result = ocr_engine_.RecognizeAsync(bitmap).get();
     auto response = ProcessOcrResult(ocr_result, bytes);
     result->Success(flutter::EncodableValue(response));
-  } catch (const hresult_error& e) {
+  } catch (const winrt::hresult_error& e) {
     result->Error("RECOGNITION_FAILED", winrt::to_string(e.message()));
   } catch (const std::exception& e) {
     result->Error("RECOGNITION_FAILED", e.what());
@@ -246,7 +248,7 @@ void FlutterOcrNativePlugin::RecognizeFromBytes(
 }
 
 flutter::EncodableMap FlutterOcrNativePlugin::ProcessOcrResult(
-    const OcrResult& ocr_result, const std::vector<uint8_t>& image_bytes) {
+    const ocr::OcrResult& ocr_result, const std::vector<uint8_t>& image_bytes) {
   std::string full_text;
   flutter::EncodableList blocks;
   std::regex english_pattern("[A-Za-z0-9]");
@@ -308,7 +310,6 @@ flutter::EncodableMap FlutterOcrNativePlugin::ProcessOcrResult(
     full_text += line_text;
   }
 
-  // Mask Aadhaar on image
   auto masked_bytes = MaskAadhaarOnImage(image_bytes, ocr_result);
 
   flutter::EncodableMap response;
@@ -324,18 +325,14 @@ flutter::EncodableMap FlutterOcrNativePlugin::ProcessOcrResult(
 }
 
 std::vector<uint8_t> FlutterOcrNativePlugin::MaskAadhaarOnImage(
-    const std::vector<uint8_t>& image_bytes, const OcrResult& ocr_result) {
-  // Find Aadhaar pattern in OCR lines
+    const std::vector<uint8_t>& image_bytes, const ocr::OcrResult& ocr_result) {
   std::regex aadhaar_pattern("(\\d{4})[\\s\\-]*(\\d{4})[\\s\\-]*(\\d{4})");
   std::smatch match;
 
-  struct MaskInfo {
-    float x, y, width, height;
-  };
+  struct MaskInfo { float x, y, width, height; };
   std::vector<MaskInfo> rects_to_mask;
 
   for (const auto& line : ocr_result.Lines()) {
-    // Build line text and track word positions
     std::string line_text;
     struct WordInfo { std::string text; float x, y, w, h; };
     std::vector<WordInfo> words;
@@ -353,14 +350,12 @@ std::vector<uint8_t> FlutterOcrNativePlugin::MaskAadhaarOnImage(
     std::string first4 = match[1].str();
     std::string second4 = match[2].str();
 
-    // Find bounding boxes of first 2 digit groups
     for (const auto& w : words) {
       if (w.text == first4 || w.text == second4) {
         rects_to_mask.push_back({w.x, w.y, w.w, w.h});
       }
     }
 
-    // If we couldn't find individual words, mask proportionally
     if (rects_to_mask.empty() && !words.empty()) {
       int match_start = (int)match.position(0);
       int last4_start = (int)match.position(3);
@@ -376,12 +371,11 @@ std::vector<uint8_t> FlutterOcrNativePlugin::MaskAadhaarOnImage(
       rects_to_mask.push_back({mask_left, min_y, mask_width, max_h});
     }
 
-    break; // Found Aadhaar, stop searching
+    break;
   }
 
   if (rects_to_mask.empty()) return {};
 
-  // Load image with GDI+ and draw black rectangles
   IStream* stream = nullptr;
   auto hglobal = GlobalAlloc(GMEM_MOVEABLE, image_bytes.size());
   auto ptr = GlobalLock(hglobal);
@@ -402,7 +396,6 @@ std::vector<uint8_t> FlutterOcrNativePlugin::MaskAadhaarOnImage(
   Gdiplus::Graphics graphics(output);
   graphics.DrawImage(image, 0, 0, img_width, img_height);
 
-  // Draw black rectangles over Aadhaar digits
   Gdiplus::SolidBrush black_brush(Gdiplus::Color(255, 0, 0, 0));
   for (const auto& r : rects_to_mask) {
     float pad_x = r.width * 0.05f;
@@ -412,7 +405,6 @@ std::vector<uint8_t> FlutterOcrNativePlugin::MaskAadhaarOnImage(
       r.width + pad_x * 2, r.height + pad_y * 2);
   }
 
-  // Save as JPEG
   CLSID jpeg_clsid;
   CLSIDFromString(L"{557CF401-1A04-11D3-9A73-0000F81EF32E}", &jpeg_clsid);
   IStream* out_stream = nullptr;
@@ -473,7 +465,6 @@ std::vector<uint8_t> FlutterOcrNativePlugin::DrawWatermark(
     const std::vector<uint8_t>& bytes,
     const flutter::EncodableMap& lines,
     int quality) {
-  // Load image with GDI+
   IStream* stream = nullptr;
   auto hglobal = GlobalAlloc(GMEM_MOVEABLE, bytes.size());
   auto ptr = GlobalLock(hglobal);
@@ -490,27 +481,23 @@ std::vector<uint8_t> FlutterOcrNativePlugin::DrawWatermark(
   int img_width = image->GetWidth();
   int img_height = image->GetHeight();
 
-  // Calculate watermark dimensions
-  float font_size = std::max(img_width * 0.03f, 36.0f);
+  // Use parenthesized std::max to avoid Windows max macro collision
+  float font_size = (std::max)(img_width * 0.03f, 36.0f);
   float line_height = font_size * 1.5f;
   float pad_h = img_width * 0.02f;
   float pad_v = img_width * 0.015f;
   int wm_height = (int)(lines.size() * line_height + pad_v * 2);
   int total_height = img_height + wm_height;
 
-  // Create output bitmap
   auto* output = new Gdiplus::Bitmap(img_width, total_height, PixelFormat32bppARGB);
   Gdiplus::Graphics graphics(output);
   graphics.SetTextRenderingHint(Gdiplus::TextRenderingHintAntiAlias);
 
-  // Draw original image
   graphics.DrawImage(image, 0, 0, img_width, img_height);
 
-  // Draw watermark background
   Gdiplus::SolidBrush bg_brush(Gdiplus::Color(180, 0, 0, 0));
   graphics.FillRectangle(&bg_brush, 0, img_height, img_width, wm_height);
 
-  // Draw text
   Gdiplus::FontFamily font_family(L"Arial");
   Gdiplus::Font font(&font_family, font_size, Gdiplus::FontStyleBold, Gdiplus::UnitPixel);
   Gdiplus::SolidBrush text_brush(Gdiplus::Color(204, 255, 255, 255));
@@ -521,7 +508,6 @@ std::vector<uint8_t> FlutterOcrNativePlugin::DrawWatermark(
     auto value = std::get<std::string>(entry.second);
     auto text = key + ": " + value;
 
-    // Convert to wide string
     int wlen = MultiByteToWideChar(CP_UTF8, 0, text.c_str(), -1, nullptr, 0);
     std::wstring wtext(wlen, 0);
     MultiByteToWideChar(CP_UTF8, 0, text.c_str(), -1, &wtext[0], wlen);
@@ -531,13 +517,10 @@ std::vector<uint8_t> FlutterOcrNativePlugin::DrawWatermark(
     y += line_height;
   }
 
-  // Save to bytes
   CLSID encoder_clsid;
   if (quality < 100) {
-    // JPEG
     CLSIDFromString(L"{557CF401-1A04-11D3-9A73-0000F81EF32E}", &encoder_clsid);
   } else {
-    // PNG
     CLSIDFromString(L"{557CF406-1A04-11D3-9A73-0000F81EF32E}", &encoder_clsid);
   }
 
@@ -557,7 +540,6 @@ std::vector<uint8_t> FlutterOcrNativePlugin::DrawWatermark(
     output->Save(out_stream, &encoder_clsid, nullptr);
   }
 
-  // Read output stream
   STATSTG stat;
   out_stream->Stat(&stat, STATFLAG_NONAME);
   ULONG out_size = (ULONG)stat.cbSize.QuadPart;
@@ -627,16 +609,15 @@ void FlutterOcrNativePlugin::RenderPdfPage(
     double scale,
     std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>> result) {
   try {
-    // Load PDF from bytes into InMemoryRandomAccessStream
-    auto stream = InMemoryRandomAccessStream();
-    auto writer = DataWriter(stream.GetOutputStreamAt(0));
-    writer.WriteBytes(array_view<const uint8_t>(bytes));
+    auto stream = streams::InMemoryRandomAccessStream();
+    auto writer = streams::DataWriter(stream.GetOutputStreamAt(0));
+    writer.WriteBytes(winrt::array_view<const uint8_t>(bytes));
     writer.StoreAsync().get();
     writer.FlushAsync().get();
     writer.DetachStream();
     stream.Seek(0);
 
-    auto doc = PdfDocument::LoadFromStreamAsync(stream).get();
+    auto doc = pdf::PdfDocument::LoadFromStreamAsync(stream).get();
     if ((uint32_t)page >= doc.PageCount()) {
       result->Error("INVALID_ARG", "Page out of range");
       return;
@@ -645,43 +626,38 @@ void FlutterOcrNativePlugin::RenderPdfPage(
     auto pdfPage = doc.GetPage(page);
     auto pageSize = pdfPage.Size();
 
-    // Cap dimensions to prevent memory issues
+    // Cap dimensions
     double maxDim = 3000.0;
     double effectiveScale = scale;
     if (pageSize.Width * scale > maxDim || pageSize.Height * scale > maxDim) {
-      effectiveScale = std::min(maxDim / pageSize.Width, maxDim / pageSize.Height);
+      effectiveScale = (std::min)(maxDim / (double)pageSize.Width, maxDim / (double)pageSize.Height);
     }
 
-    // Render to an InMemoryRandomAccessStream as PNG image
-    auto renderStream = InMemoryRandomAccessStream();
-    PdfPageRenderOptions options;
+    auto renderStream = streams::InMemoryRandomAccessStream();
+    pdf::PdfPageRenderOptions options;
     options.DestinationWidth((uint32_t)(pageSize.Width * effectiveScale));
     options.DestinationHeight((uint32_t)(pageSize.Height * effectiveScale));
-    // White background
-    Windows::UI::Color white;
+    winrt::Windows::UI::Color white;
     white.A = 255; white.R = 255; white.G = 255; white.B = 255;
     options.BackgroundColor(white);
     pdfPage.RenderToStreamAsync(renderStream, options).get();
     pdfPage.Close();
 
-    // Read rendered PNG stream into bytes
     renderStream.Seek(0);
     uint32_t size = (uint32_t)renderStream.Size();
-    auto reader = DataReader(renderStream);
+    auto reader = streams::DataReader(renderStream);
     reader.LoadAsync(size).get();
     std::vector<uint8_t> img_bytes(size);
     reader.ReadBytes(img_bytes);
     reader.DetachStream();
 
-    // Compress to JPEG using GDI+ (input is PNG from WinRT)
     auto jpeg_bytes = CompressToJpeg(img_bytes, 85);
     if (jpeg_bytes.empty()) {
-      // Return PNG bytes directly if JPEG compression fails
       result->Success(flutter::EncodableValue(img_bytes));
     } else {
       result->Success(flutter::EncodableValue(jpeg_bytes));
     }
-  } catch (const hresult_error& e) {
+  } catch (const winrt::hresult_error& e) {
     result->Error("PDF_RENDER_FAILED", winrt::to_string(e.message()));
   } catch (const std::exception& e) {
     result->Error("PDF_RENDER_FAILED", e.what());
@@ -692,17 +668,17 @@ void FlutterOcrNativePlugin::GetPdfPageCount(
     const std::vector<uint8_t>& bytes,
     std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>> result) {
   try {
-    auto stream = InMemoryRandomAccessStream();
-    auto writer = DataWriter(stream.GetOutputStreamAt(0));
-    writer.WriteBytes(array_view<const uint8_t>(bytes));
+    auto stream = streams::InMemoryRandomAccessStream();
+    auto writer = streams::DataWriter(stream.GetOutputStreamAt(0));
+    writer.WriteBytes(winrt::array_view<const uint8_t>(bytes));
     writer.StoreAsync().get();
     writer.FlushAsync().get();
     writer.DetachStream();
     stream.Seek(0);
 
-    auto doc = PdfDocument::LoadFromStreamAsync(stream).get();
+    auto doc = pdf::PdfDocument::LoadFromStreamAsync(stream).get();
     result->Success(flutter::EncodableValue((int)doc.PageCount()));
-  } catch (const hresult_error& e) {
+  } catch (const winrt::hresult_error& e) {
     result->Error("PDF_READ_FAILED", winrt::to_string(e.message()));
   } catch (const std::exception& e) {
     result->Error("PDF_READ_FAILED", e.what());

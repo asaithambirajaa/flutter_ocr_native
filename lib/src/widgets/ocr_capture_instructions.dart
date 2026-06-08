@@ -208,7 +208,7 @@ class _InstructionTile extends StatelessWidget {
           Container(
             padding: const EdgeInsets.all(8),
             decoration: BoxDecoration(
-              color: instruction.color.withOpacity(0.1),
+              color: instruction.color.withValues(alpha: 0.1),
               borderRadius: BorderRadius.circular(8),
             ),
             child: Icon(instruction.icon, color: instruction.color, size: 20),

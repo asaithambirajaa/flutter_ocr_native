@@ -29,6 +29,10 @@
 * Added `_isPdf()` detection in example flow
 * File picker now accepts PDF alongside image formats
 * `correctOrientation` skips images >10MB to prevent OOM
+* **Windows compile fix** — resolves all 3 MSVC build errors:
+  - Added `#define NOMINMAX` and `(std::max)(...)` parenthesization to prevent `error C2589` from Windows `max` macro
+  - Replaced broad `using namespace` WinRT imports with namespace aliases (`ocr::`, `streams::`, `imaging::`, `pdf::`) to fix `error C2872: 'IUnknown' ambiguous symbol`
+  - Added `#include <winrt/Windows.Globalization.h>` to fix linker error for `Windows::Globalization::Language`
 
 ## 0.2.1
 
