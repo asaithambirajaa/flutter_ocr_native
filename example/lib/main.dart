@@ -54,12 +54,16 @@ class _OcrHomePageState extends State<OcrHomePage> {
       });
 
   Future<void> _pickFromCamera() async {
+    final proceed = await OcrCaptureInstructions.showAsBottomSheet(context);
+    if (proceed != true) return;
     final picked = await _picker.pickImage(source: ImageSource.camera);
     if (picked != null) _processFile(File(picked.path));
   }
 
   Future<void> _pickFromGallery() async {
     if (isMobile) {
+      final proceed = await OcrCaptureInstructions.showAsBottomSheet(context);
+      if (proceed != true) return;
       final picked = await _picker.pickImage(source: ImageSource.gallery);
       if (picked != null) _processFile(File(picked.path));
     } else {
@@ -68,19 +72,40 @@ class _OcrHomePageState extends State<OcrHomePage> {
   }
 
   Future<void> _pickFromFileBrowser() async {
-    final result = await FilePicker.platform
-        .pickFiles(type: FileType.image, allowMultiple: false);
+    final result = await FilePicker.platform.pickFiles(
+      type: FileType.custom,
+      allowedExtensions: ['jpg', 'jpeg', 'png', 'webp', 'bmp', 'gif', 'heic', 'tiff', 'pdf'],
+      allowMultiple: false,
+    );
     if (result != null && result.files.single.path != null) {
       _processFile(File(result.files.single.path!));
     }
   }
 
+  bool _isPdf(File file) => file.path.toLowerCase().endsWith('.pdf');
+
   Future<void> _processFile(File file) async {
     final rawBytes = await file.readAsBytes();
     if (!mounted) return;
 
-    // Auto-correct orientation from EXIF before showing cropper
-    final originalBytes = await OcrDocumentSaver.correctOrientation(rawBytes);
+    Uint8List imageBytes;
+
+    // Handle PDF: render first page to image
+    if (_isPdf(file)) {
+      final rendered = await OcrDocumentSaver.renderPdfPage(rawBytes);
+      if (rendered == null) {
+        setState(() => _error = 'Failed to render PDF. Platform may not support it.');
+        return;
+      }
+      imageBytes = rendered;
+    } else {
+      imageBytes = rawBytes;
+    }
+
+    if (!mounted) return;
+
+    // Auto-correct orientation
+    final originalBytes = await OcrDocumentSaver.correctOrientation(imageBytes);
     if (!mounted) return;
 
     final croppedBytes = await OcrImageCropper.show(

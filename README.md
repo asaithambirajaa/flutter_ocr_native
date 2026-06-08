@@ -1,6 +1,6 @@
 # flutter_ocr_native
 
-A Flutter plugin for extracting text from images using native on-device OCR engines — **no third-party Dart OCR packages required**.
+A Flutter plugin for extracting text from images **and PDFs** using native on-device OCR engines — **no third-party Dart OCR packages required**.
 
 - **Android**: Google ML Kit Text Recognition
 - **iOS**: Apple Vision Framework
@@ -11,10 +11,12 @@ A Flutter plugin for extracting text from images using native on-device OCR engi
 ## Features
 
 - Read text from image file path, `File`, or raw bytes
+- **Native PDF to image** — render PDF pages without third-party packages
 - Structured results: blocks → lines → elements with bounding boxes & confidence scores
 - English-only extraction — non-Latin scripts auto-filtered
 - **Auto-orientation correction** — detects correct image rotation using OCR confidence
 - **Image cropper** with rotate support — crop & rotate before OCR
+- **Capture instructions widget** — show best practices before scan/upload
 - **Document type auto-detection** — Aadhaar, PAN, Passport, Driving License, Voter ID, Cheque
 - **Document details parsing** — structured fields from OCR text (name, DOB, address, etc.)
 - **Unified `DocumentDetails` model** — single API for all document types
@@ -35,7 +37,7 @@ A Flutter plugin for extracting text from images using native on-device OCR engi
 
 ```yaml
 dependencies:
-  flutter_ocr_native: ^0.2.1
+  flutter_ocr_native: ^0.3.0
 ```
 
 ### Android
@@ -82,6 +84,10 @@ final result = await reader.readFromFile(File('image.png'));
 // From bytes
 final result = await reader.readFromBytes(imageBytes);
 
+// From PDF (native rendering — no third-party packages)
+final result = await reader.readFromPdf(pdfBytes, page: 0);
+final result = await reader.readFromPdfFile(File('document.pdf'));
+
 // Structured data
 for (final block in result.blocks) {
   for (final line in block.lines) {
@@ -91,6 +97,36 @@ for (final block in result.blocks) {
 
 await reader.dispose();
 ```
+
+### PDF to Image (Native)
+
+Render PDF pages to images natively — no Dart PDF packages needed.
+
+```dart
+// Render single page
+final imageBytes = await OcrDocumentSaver.renderPdfPage(
+  pdfBytes,
+  page: 0,      // zero-based index
+  scale: 2.0,   // render quality (2x = good for OCR)
+);
+
+// Get page count
+final count = await OcrDocumentSaver.getPdfPageCount(pdfBytes);
+
+// Render all pages
+final allPages = await OcrDocumentSaver.renderAllPdfPages(pdfBytes);
+
+// Direct PDF → OCR (single call)
+final result = await reader.readFromPdf(pdfBytes);
+```
+
+| Platform | PDF Engine |
+|----------|------------|
+| Android  | `PdfRenderer` (API 21+) |
+| iOS      | `CGPDFDocument` |
+| macOS    | `CGPDFDocument` |
+| Windows  | `Windows.Data.Pdf` |
+| Linux    | Not supported (returns null) |
 
 ### Auto-Orientation Correction
 
@@ -118,6 +154,37 @@ final cropped = await OcrImageCropper.show(
 if (cropped != null) {
   final result = await reader.readFromBytes(cropped);
 }
+```
+
+### Capture Instructions (Show Before Scan)
+
+Guide users on best angle, lighting, and document clarity before capture.
+
+```dart
+// Bottom sheet (recommended for mobile)
+final proceed = await OcrCaptureInstructions.showAsBottomSheet(context);
+if (proceed != true) return;
+// Now open camera/gallery...
+
+// Dialog
+await OcrCaptureInstructions.showAsDialog(context);
+
+// Custom instructions
+OcrCaptureInstructions.showAsBottomSheet(
+  context,
+  title: 'PAN Card Upload Tips',
+  customInstructions: [
+    OcrInstruction(
+      icon: Icons.credit_card,
+      title: 'Front Side Only',
+      description: 'Upload only the front side of your PAN card.',
+      color: Colors.indigo,
+    ),
+  ],
+);
+
+// Inline widget
+OcrCaptureInstructions() // embed directly in your UI
 ```
 
 ### Validation & Aadhaar Masking
@@ -332,26 +399,35 @@ reader.maskAadhaar = false;
 
 ```dart
 Future<void> processDocument(File file) async {
-  // 1. Read & auto-correct orientation
+  // 1. Handle PDF or image
   final rawBytes = await file.readAsBytes();
-  final corrected = await OcrDocumentSaver.correctOrientation(rawBytes);
+  final Uint8List imageBytes;
+  if (file.path.toLowerCase().endsWith('.pdf')) {
+    final rendered = await OcrDocumentSaver.renderPdfPage(rawBytes);
+    if (rendered == null) return;
+    imageBytes = rendered;
+  } else {
+    imageBytes = rawBytes;
+  }
 
-  // 2. Crop (with rotate option)
+  // 2. Auto-correct orientation
+  final corrected = await OcrDocumentSaver.correctOrientation(imageBytes);
+
+  // 3. Crop (with rotate option)
   final cropped = await OcrImageCropper.show(context, imageBytes: corrected);
   if (cropped == null) return;
 
-  // 3. OCR
+  // 4. OCR
   final reader = OcrReader(validateDocument: true, maskAadhaar: true);
   final result = await reader.readFromBytes(cropped);
 
-  // 4. Get unified details (parses fields + extracts face)
+  // 5. Get unified details (parses fields + extracts face)
   final details = await DocumentDetails.fromResult(result, imageBytes: cropped);
 
-  // 5. Display
+  // 6. Display
   final fields = details.toDisplayMap(maskAadhaar: true);
-  // Show fields, face photo, validation status...
 
-  // 6. View & Download (uses corrected orientation)
+  // 7. Download with watermark
   await OcrDocumentSaver.downloadBytes(
     imageBytes: cropped,
     watermark: OcrWatermark(lines: {'Agent': 'Ram Kumar'}),
@@ -376,12 +452,13 @@ lib/
     │   ├── passport_details.dart           # PassportDetails parser
     │   └── voter_id_details.dart           # VoterIdDetails parser
     ├── utils/
-    │   └── ocr_document_saver.dart        # Download, save, watermark, compress, face, orientation
+    │   └── ocr_document_saver.dart        # Download, save, watermark, compress, face, orientation, PDF
     ├── validators/
     │   ├── document_number_validator.dart  # Aadhaar, PAN, Passport, DL, Voter ID, IFSC validation
     │   ├── document_type_detector.dart    # Auto-detect document type from OCR text
     │   └── ocr_validator.dart             # Document validation (printed check, min length)
     ├── widgets/
+    │   ├── ocr_capture_instructions.dart   # Pre-scan tips widget
     │   ├── ocr_details_card.dart          # Structured details card widget
     │   ├── ocr_document_viewer.dart       # Full-screen viewer with zoom
     │   └── ocr_image_cropper.dart         # Crop + rotate widget
@@ -390,16 +467,16 @@ lib/
     └── ocr_reader.dart                    # Public API class
 
 android/src/main/kotlin/com/flutter_ocr_native/
-    └── OcrPlugin.kt                       # ML Kit OCR + face + orientation + crop + rotate
+    └── OcrPlugin.kt                       # ML Kit OCR + face + orientation + crop + rotate + PDF
 
 ios/Classes/
-    └── OcrPlugin.swift                    # Vision OCR + face + orientation + crop + rotate
+    └── OcrPlugin.swift                    # Vision OCR + face + orientation + crop + rotate + PDF
 
 macos/Classes/
-    └── OcrPlugin.swift                    # Vision OCR + face + orientation + crop + rotate
+    └── OcrPlugin.swift                    # Vision OCR + face + orientation + crop + rotate + PDF
 
 windows/
-    └── ocr_plugin.cpp                     # WinRT OCR + GDI+
+    └── ocr_plugin.cpp                     # WinRT OCR + GDI+ + PDF
 
 linux/
     └── ocr_plugin.cc                      # Tesseract OCR + Leptonica
@@ -407,13 +484,13 @@ linux/
 
 ## Supported Platforms
 
-| Platform | Min Version | OCR Engine | Face Extraction | Auto-Orientation |
-|----------|-------------|------------|-----------------|------------------|
-| Android  | SDK 21      | Google ML Kit | ✅ | ✅ |
-| iOS      | 13.0        | Apple Vision  | ✅ | ✅ |
-| macOS    | 10.15       | Apple Vision  | ✅ | ✅ |
-| Windows  | 10          | WinRT OCR     | ❌ | ❌ |
-| Linux    | Any         | Tesseract OCR | ❌ | ❌ |
+| Platform | Min Version | OCR Engine | Face Extraction | Auto-Orientation | PDF Render |
+|----------|-------------|------------|-----------------|------------------|------------|
+| Android  | SDK 21      | Google ML Kit | ✅ | ✅ | ✅ |
+| iOS      | 13.0        | Apple Vision  | ✅ | ✅ | ✅ |
+| macOS    | 10.15       | Apple Vision  | ✅ | ✅ | ✅ |
+| Windows  | 10          | WinRT OCR     | ❌ | ❌ | ✅ |
+| Linux    | Any         | Tesseract OCR | ❌ | ❌ | ❌ |
 
 ## Flutter Compatibility
 

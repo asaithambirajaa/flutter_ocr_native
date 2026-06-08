@@ -13,6 +13,7 @@ export 'src/utils/ocr_document_saver.dart';
 export 'src/validators/document_number_validator.dart';
 export 'src/validators/document_type_detector.dart';
 export 'src/validators/ocr_validator.dart';
+export 'src/widgets/ocr_capture_instructions.dart';
 export 'src/widgets/ocr_details_card.dart';
 export 'src/widgets/ocr_document_viewer.dart';
 export 'src/widgets/ocr_image_cropper.dart';

@@ -7,7 +7,9 @@ import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.Rect
+import android.graphics.pdf.PdfRenderer
 import android.net.Uri
+import android.os.ParcelFileDescriptor
 import androidx.exifinterface.media.ExifInterface
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.face.FaceDetection
@@ -220,9 +222,24 @@ class OcrPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
                     return
                 }
 
-                // EXIF normal — first check if original orientation is readable
+                // EXIF normal — use a downscaled version for OCR confidence testing
+                // to avoid OOM with large images
+                val maxTestSize = 1024
+                val scaleFactor = if (bitmap.width > maxTestSize || bitmap.height > maxTestSize) {
+                    minOf(maxTestSize.toFloat() / bitmap.width, maxTestSize.toFloat() / bitmap.height)
+                } else 1f
+
+                val testBitmap = if (scaleFactor < 1f) {
+                    Bitmap.createScaledBitmap(
+                        bitmap,
+                        (bitmap.width * scaleFactor).toInt(),
+                        (bitmap.height * scaleFactor).toInt(),
+                        true
+                    )
+                } else bitmap
+
                 val rec = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
-                val originalInput = InputImage.fromBitmap(bitmap, 0)
+                val originalInput = InputImage.fromBitmap(testBitmap, 0)
                 rec.process(originalInput)
                     .addOnSuccessListener { originalText ->
                         val originalScore = originalText.textBlocks.sumOf { block ->
@@ -234,12 +251,13 @@ class OcrPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
                         // If original has good readable text, keep it
                         val hasGoodText = originalText.textBlocks.size >= 2 && originalScore > 5f
                         if (hasGoodText) {
+                            if (testBitmap !== bitmap) testBitmap.recycle()
                             bitmap.recycle()
                             result.success(bytes)
                             return@addOnSuccessListener
                         }
 
-                        // Original not readable — try other rotations
+                        // Original not readable — try other rotations using small test bitmap
                         val otherRotations = listOf(90f, 180f, 270f)
                         var bestDegrees = 0f
                         var bestConfidence = originalScore
@@ -248,8 +266,8 @@ class OcrPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
                         for (deg in otherRotations) {
                             val m = android.graphics.Matrix()
                             m.postRotate(deg)
-                            val testBitmap = Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, m, true)
-                            val input = InputImage.fromBitmap(testBitmap, 0)
+                            val rotatedTest = Bitmap.createBitmap(testBitmap, 0, 0, testBitmap.width, testBitmap.height, m, true)
+                            val input = InputImage.fromBitmap(rotatedTest, 0)
                             rec.process(input)
                                 .addOnSuccessListener { text ->
                                     val confidence = text.textBlocks.sumOf { block ->
@@ -264,10 +282,12 @@ class OcrPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
                                         }
                                         pending--
                                         if (pending == 0) {
+                                            if (testBitmap !== bitmap) testBitmap.recycle()
                                             if (bestDegrees == 0f) {
                                                 bitmap.recycle()
                                                 result.success(bytes)
                                             } else {
+                                                // Apply rotation to the full-size original
                                                 val fm = android.graphics.Matrix()
                                                 fm.postRotate(bestDegrees)
                                                 val final_ = Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, fm, true)
@@ -279,21 +299,23 @@ class OcrPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
                                             }
                                         }
                                     }
-                                    testBitmap.recycle()
+                                    rotatedTest.recycle()
                                 }
                                 .addOnFailureListener {
                                     synchronized(this) {
                                         pending--
                                         if (pending == 0) {
+                                            if (testBitmap !== bitmap) testBitmap.recycle()
                                             bitmap.recycle()
                                             result.success(bytes)
                                         }
                                     }
-                                    testBitmap.recycle()
+                                    rotatedTest.recycle()
                                 }
                         }
                     }
                     .addOnFailureListener {
+                        if (testBitmap !== bitmap) testBitmap.recycle()
                         bitmap.recycle()
                         result.success(bytes)
                     }
@@ -302,6 +324,25 @@ class OcrPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
                 recognizer?.close()
                 recognizer = null
                 result.success(null)
+            }
+            "renderPdfPage" -> {
+                val bytes = call.argument<ByteArray>("pdfBytes")
+                val page = call.argument<Int>("page") ?: 0
+                val scale = call.argument<Double>("scale") ?: 2.0
+
+                if (bytes == null) {
+                    result.error("INVALID_ARG", "pdfBytes is required", null)
+                    return
+                }
+                renderPdfPage(bytes, page, scale, result)
+            }
+            "getPdfPageCount" -> {
+                val bytes = call.argument<ByteArray>("pdfBytes")
+                if (bytes == null) {
+                    result.error("INVALID_ARG", "pdfBytes is required", null)
+                    return
+                }
+                getPdfPageCount(bytes, result)
             }
             else -> result.notImplemented()
         }
@@ -671,5 +712,89 @@ class OcrPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
                 result.error("FACE_DETECTION_FAILED", e.message, null)
             }
             .addOnCompleteListener { detector.close() }
+    }
+
+    private fun renderPdfPage(bytes: ByteArray, page: Int, scale: Double, result: MethodChannel.Result) {
+        // Run on background thread to avoid ANR
+        Thread {
+            try {
+                val tempFile = File.createTempFile("pdf_render", ".pdf", context.cacheDir)
+                tempFile.writeBytes(bytes)
+                val fd = ParcelFileDescriptor.open(tempFile, ParcelFileDescriptor.MODE_READ_ONLY)
+                val renderer = PdfRenderer(fd)
+
+                if (page < 0 || page >= renderer.pageCount) {
+                    renderer.close()
+                    fd.close()
+                    tempFile.delete()
+                    android.os.Handler(android.os.Looper.getMainLooper()).post {
+                        result.error("INVALID_ARG", "Page $page out of range (0-${renderer.pageCount - 1})", null)
+                    }
+                    return@Thread
+                }
+
+                val pdfPage = renderer.openPage(page)
+
+                // Cap dimensions to prevent OOM — max 3000px on either side
+                val maxDimension = 3000
+                val rawWidth = (pdfPage.width * scale).toInt()
+                val rawHeight = (pdfPage.height * scale).toInt()
+                val effectiveScale = if (rawWidth > maxDimension || rawHeight > maxDimension) {
+                    val scaleW = maxDimension.toDouble() / pdfPage.width
+                    val scaleH = maxDimension.toDouble() / pdfPage.height
+                    minOf(scaleW, scaleH)
+                } else {
+                    scale
+                }
+                val width = (pdfPage.width * effectiveScale).toInt()
+                val height = (pdfPage.height * effectiveScale).toInt()
+
+                val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+                bitmap.eraseColor(Color.WHITE)
+
+                // Render without matrix (most compatible across API levels)
+                // PdfRenderer renders at the page's native size into the provided bitmap
+                // The bitmap size itself controls the output resolution
+                pdfPage.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
+                pdfPage.close()
+                renderer.close()
+                fd.close()
+                tempFile.delete()
+
+                val stream = ByteArrayOutputStream()
+                bitmap.compress(Bitmap.CompressFormat.JPEG, 85, stream)
+                bitmap.recycle()
+
+                val output = stream.toByteArray()
+                android.os.Handler(android.os.Looper.getMainLooper()).post {
+                    result.success(output)
+                }
+            } catch (e: OutOfMemoryError) {
+                System.gc()
+                android.os.Handler(android.os.Looper.getMainLooper()).post {
+                    result.error("OOM", "Image too large to render. Try lower scale.", null)
+                }
+            } catch (e: Exception) {
+                android.os.Handler(android.os.Looper.getMainLooper()).post {
+                    result.error("PDF_RENDER_FAILED", e.message, null)
+                }
+            }
+        }.start()
+    }
+
+    private fun getPdfPageCount(bytes: ByteArray, result: MethodChannel.Result) {
+        try {
+            val tempFile = File.createTempFile("pdf_count", ".pdf", context.cacheDir)
+            tempFile.writeBytes(bytes)
+            val fd = ParcelFileDescriptor.open(tempFile, ParcelFileDescriptor.MODE_READ_ONLY)
+            val renderer = PdfRenderer(fd)
+            val count = renderer.pageCount
+            renderer.close()
+            fd.close()
+            tempFile.delete()
+            result.success(count)
+        } catch (e: Exception) {
+            result.error("PDF_READ_FAILED", e.message, null)
+        }
     }
 }

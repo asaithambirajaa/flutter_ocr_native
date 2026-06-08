@@ -238,9 +238,102 @@ public class OcrPlugin: NSObject, FlutterPlugin {
         case "dispose":
             result(nil)
 
+        case "renderPdfPage":
+            guard let args = call.arguments as? [String: Any],
+                  let bytes = args["pdfBytes"] as? FlutterStandardTypedData else {
+                result(FlutterError(code: "INVALID_ARG", message: "pdfBytes required", details: nil))
+                return
+            }
+            let page = args["page"] as? Int ?? 0
+            let scale = args["scale"] as? Double ?? 2.0
+            renderPdfPage(data: bytes.data, page: page, scale: CGFloat(scale), result: result)
+
+        case "getPdfPageCount":
+            guard let args = call.arguments as? [String: Any],
+                  let bytes = args["pdfBytes"] as? FlutterStandardTypedData else {
+                result(FlutterError(code: "INVALID_ARG", message: "pdfBytes required", details: nil))
+                return
+            }
+            let count = getPdfPageCount(data: bytes.data)
+            result(count)
+
         default:
             result(FlutterMethodNotImplemented)
         }
+    }
+
+    private func renderPdfPage(data: Data, page: Int, scale: CGFloat, result: @escaping FlutterResult) {
+        DispatchQueue.global(qos: .userInitiated).async {
+            guard let provider = CGDataProvider(data: data as CFData),
+                  let document = CGPDFDocument(provider) else {
+                DispatchQueue.main.async {
+                    result(FlutterError(code: "PDF_READ_FAILED", message: "Cannot open PDF", details: nil))
+                }
+                return
+            }
+
+            guard let pdfPage = document.page(at: page + 1) else {
+                DispatchQueue.main.async {
+                    result(FlutterError(code: "INVALID_ARG", message: "Page \(page) not found", details: nil))
+                }
+                return
+            }
+
+            let pageRect = pdfPage.getBoxRect(.mediaBox)
+            // Cap to prevent memory issues
+            let maxDim: CGFloat = 3000
+            let effectiveScale: CGFloat
+            let rawW = pageRect.width * scale
+            let rawH = pageRect.height * scale
+            if rawW > maxDim || rawH > maxDim {
+                effectiveScale = min(maxDim / pageRect.width, maxDim / pageRect.height)
+            } else {
+                effectiveScale = scale
+            }
+
+            let width = Int(pageRect.width * effectiveScale)
+            let height = Int(pageRect.height * effectiveScale)
+
+            let colorSpace = CGColorSpaceCreateDeviceRGB()
+            guard let ctx = CGContext(data: nil, width: width, height: height,
+                                       bitsPerComponent: 8, bytesPerRow: width * 4,
+                                       space: colorSpace,
+                                       bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else {
+                DispatchQueue.main.async { result(nil) }
+                return
+            }
+
+            // White background
+            ctx.setFillColor(UIColor.white.cgColor)
+            ctx.fill(CGRect(x: 0, y: 0, width: width, height: height))
+
+            // Scale and draw PDF page
+            ctx.scaleBy(x: effectiveScale, y: effectiveScale)
+            ctx.drawPDFPage(pdfPage)
+
+            guard let cgImage = ctx.makeImage() else {
+                DispatchQueue.main.async { result(nil) }
+                return
+            }
+
+            let uiImage = UIImage(cgImage: cgImage)
+            guard let jpegData = uiImage.jpegData(compressionQuality: 0.85) else {
+                DispatchQueue.main.async { result(nil) }
+                return
+            }
+
+            DispatchQueue.main.async {
+                result(FlutterStandardTypedData(bytes: jpegData))
+            }
+        }
+    }
+
+    private func getPdfPageCount(data: Data) -> Int {
+        guard let provider = CGDataProvider(data: data as CFData),
+              let document = CGPDFDocument(provider) else {
+            return 0
+        }
+        return document.numberOfPages
     }
 
     private func isEnglish(_ text: String) -> Bool {

@@ -168,11 +168,64 @@ class DocumentDetails {
   }
 
   static DocumentDetails _fromPan(OcrResult result) {
-    final pan = DocumentNumberValidator.extractPAN(result.text);
+    final text = result.text;
+    final upper = text.toUpperCase();
+    var pan = DocumentNumberValidator.extractPAN(text);
+
+    // Fallback: try extracting from uppercase version (handles mixed case OCR)
+    pan ??= DocumentNumberValidator.extractPAN(upper);
+
+    // Fallback: try fixing common OCR misreads (O→0, I→1, S→5)
+    if (pan == null) {
+      final corrected = upper
+          .replaceAll(RegExp(r'(?<=[A-Z]{5})[O]'), '0')
+          .replaceAll(RegExp(r'(?<=[A-Z]{5}\d*)[O]'), '0')
+          .replaceAll(RegExp(r'(?<=[A-Z]{5}\d*)[I]'), '1')
+          .replaceAll(RegExp(r'(?<=[A-Z]{5}\d*)[S]'), '5');
+      pan = DocumentNumberValidator.extractPAN(corrected);
+    }
+
+    // Parse name and DOB from PAN card text
+    String? name;
+    String? fatherName;
+    String? dob;
+
+    final lines = text.split('\n').map((l) => l.trim()).where((l) => l.isNotEmpty).toList();
+
+    for (int i = 0; i < lines.length; i++) {
+      final line = lines[i].toUpperCase();
+      // DOB patterns
+      if (dob == null) {
+        final dobMatch = RegExp(r'(\d{2}[/\-]\d{2}[/\-]\d{4})').firstMatch(lines[i]);
+        if (dobMatch != null) dob = dobMatch.group(1);
+      }
+      // Name: line after "Name" or the line that is a proper name (all caps, no digits)
+      if (line.contains('NAME') && i + 1 < lines.length) {
+        final candidate = lines[i + 1].trim();
+        if (RegExp(r'^[A-Za-z\s]+$').hasMatch(candidate) && candidate.length > 2) {
+          if (name == null) {
+            name = candidate;
+          } else {
+            fatherName ??= candidate;
+          }
+        }
+      }
+      // Father's name keyword
+      if ((line.contains('FATHER') || line.contains("FATHER'S")) && i + 1 < lines.length) {
+        final candidate = lines[i + 1].trim();
+        if (RegExp(r'^[A-Za-z\s]+$').hasMatch(candidate) && candidate.length > 2) {
+          fatherName = candidate;
+        }
+      }
+    }
+
     final error = pan != null ? null : 'PAN number not found';
     return DocumentDetails(
       docType: DetectedDocType.pan,
       documentNumber: pan,
+      name: name,
+      fatherName: fatherName,
+      dob: dob,
       isValid: pan != null,
       validationError: error,
       extraFields: {

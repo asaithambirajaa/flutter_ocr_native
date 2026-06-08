@@ -1,3 +1,35 @@
+## 0.3.0
+
+* **Native PDF to image conversion** — render PDF pages to images without any third-party Dart package
+  - Android: `PdfRenderer` (API 21+)
+  - iOS: `CGPDFDocument` (CoreGraphics)
+  - macOS: `CGPDFDocument` (CoreGraphics)
+  - Windows: `Windows.Data.Pdf` (WinRT)
+  - Linux: not supported (returns null gracefully)
+* Added `OcrDocumentSaver.renderPdfPage()` — renders a single PDF page to JPEG bytes
+* Added `OcrDocumentSaver.getPdfPageCount()` — returns total pages in a PDF
+* Added `OcrDocumentSaver.renderAllPdfPages()` — renders all pages to a list of image bytes
+* Added `OcrReader.readFromPdf()` — single-call PDF to OCR text
+* Added `OcrReader.readFromPdfFile()` — OCR directly from a PDF file
+* **Capture instructions widget** — `OcrCaptureInstructions` shows best practices before scan/upload
+  - `showAsBottomSheet()` — modal bottom sheet with tips
+  - `showAsDialog()` — dialog with tips
+  - Inline widget mode — embed directly in your UI
+  - Customizable instructions via `OcrInstruction` model
+* **Enhanced PAN card detection** — OCR misread correction (O→0, I→1, S→5), uppercase fallback, name/DOB/father name parsing
+* **OOM crash fix (Android)** — `correctOrientation` now uses 1024px downscaled test bitmaps for rotation detection instead of full-size images
+* **OOM crash fix (all platforms)** — PDF rendering capped at 3000px max dimension
+* **Background thread rendering** — PDF rendering runs off main thread on Android, iOS, and macOS
+* **Fixed `FlutterImageDecoderImplDefault` crash** — PDF bytes no longer passed to image decoder; detected and rendered to JPEG first
+* **Fixed Windows compile error** — added `Windows.UI.h` include, fixed `ColorHelper` usage with direct struct
+* **Fixed Windows stream crash** — `DataWriter.DetachStream()` prevents premature stream closure
+* **Linux graceful fallback** — `renderPdfPage` returns null, `getPdfPageCount` returns 0 (no crash)
+* Example app now supports PDF file picking and processing
+* Example app shows capture instructions before camera/gallery
+* Added `_isPdf()` detection in example flow
+* File picker now accepts PDF alongside image formats
+* `correctOrientation` skips images >10MB to prevent OOM
+
 ## 0.2.1
 
 * **Smart auto-orientation** — only rotates if original is unreadable; keeps already-readable images untouched

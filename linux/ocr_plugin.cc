@@ -282,6 +282,12 @@ static void method_call_handler(FlMethodChannel* channel, FlMethodCall* method_c
     response = compress_image(data, len, quality);
   } else if (strcmp(method, "dispose") == 0) {
     response = FL_METHOD_RESPONSE(fl_method_success_response_new(fl_value_new_null()));
+  } else if (strcmp(method, "renderPdfPage") == 0) {
+    // PDF rendering not supported on Linux
+    response = FL_METHOD_RESPONSE(fl_method_success_response_new(fl_value_new_null()));
+  } else if (strcmp(method, "getPdfPageCount") == 0) {
+    // PDF page count not supported on Linux
+    response = FL_METHOD_RESPONSE(fl_method_success_response_new(fl_value_new_int(0)));
   } else {
     response = FL_METHOD_RESPONSE(fl_method_not_implemented_response_new());
   }

@@ -7,9 +7,11 @@
 #include <windows.h>
 #include <winrt/Windows.Foundation.h>
 #include <winrt/Windows.Foundation.Collections.h>
+#include <winrt/Windows.Data.Pdf.h>
 #include <winrt/Windows.Graphics.Imaging.h>
 #include <winrt/Windows.Media.Ocr.h>
 #include <winrt/Windows.Storage.Streams.h>
+#include <winrt/Windows.UI.h>
 
 #include <gdiplus.h>
 #include <shlobj.h>
@@ -24,6 +26,7 @@
 
 using namespace winrt;
 using namespace Windows::Foundation;
+using namespace Windows::Data::Pdf;
 using namespace Windows::Graphics::Imaging;
 using namespace Windows::Media::Ocr;
 using namespace Windows::Storage::Streams;
@@ -59,6 +62,16 @@ class FlutterOcrNativePlugin : public flutter::Plugin {
   void CompressImage(
       const std::vector<uint8_t>& bytes,
       int quality,
+      std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>> result);
+
+  void RenderPdfPage(
+      const std::vector<uint8_t>& bytes,
+      int page,
+      double scale,
+      std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>> result);
+
+  void GetPdfPageCount(
+      const std::vector<uint8_t>& bytes,
       std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>> result);
 
   flutter::EncodableMap ProcessOcrResult(const OcrResult& ocr_result,
@@ -155,6 +168,22 @@ void FlutterOcrNativePlugin::HandleMethodCall(
     CompressImage(bytes, quality, std::move(result));
   } else if (method == "dispose") {
     result->Success(flutter::EncodableValue());
+  } else if (method == "renderPdfPage") {
+    if (!args) { result->Error("INVALID_ARG", "Arguments required"); return; }
+    auto bytes_it = args->find(flutter::EncodableValue("pdfBytes"));
+    auto page_it = args->find(flutter::EncodableValue("page"));
+    auto scale_it = args->find(flutter::EncodableValue("scale"));
+    if (bytes_it == args->end()) { result->Error("INVALID_ARG", "pdfBytes required"); return; }
+    auto bytes = std::get<std::vector<uint8_t>>(bytes_it->second);
+    int page = page_it != args->end() ? std::get<int>(page_it->second) : 0;
+    double scale = scale_it != args->end() ? std::get<double>(scale_it->second) : 2.0;
+    RenderPdfPage(bytes, page, scale, std::move(result));
+  } else if (method == "getPdfPageCount") {
+    if (!args) { result->Error("INVALID_ARG", "Arguments required"); return; }
+    auto bytes_it = args->find(flutter::EncodableValue("pdfBytes"));
+    if (bytes_it == args->end()) { result->Error("INVALID_ARG", "pdfBytes required"); return; }
+    auto bytes = std::get<std::vector<uint8_t>>(bytes_it->second);
+    GetPdfPageCount(bytes, std::move(result));
   } else {
     result->NotImplemented();
   }
@@ -590,6 +619,94 @@ std::vector<uint8_t> FlutterOcrNativePlugin::CompressToJpeg(
   stream->Release();
 
   return out_bytes;
+}
+
+void FlutterOcrNativePlugin::RenderPdfPage(
+    const std::vector<uint8_t>& bytes,
+    int page,
+    double scale,
+    std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>> result) {
+  try {
+    // Load PDF from bytes into InMemoryRandomAccessStream
+    auto stream = InMemoryRandomAccessStream();
+    auto writer = DataWriter(stream.GetOutputStreamAt(0));
+    writer.WriteBytes(array_view<const uint8_t>(bytes));
+    writer.StoreAsync().get();
+    writer.FlushAsync().get();
+    writer.DetachStream();
+    stream.Seek(0);
+
+    auto doc = PdfDocument::LoadFromStreamAsync(stream).get();
+    if ((uint32_t)page >= doc.PageCount()) {
+      result->Error("INVALID_ARG", "Page out of range");
+      return;
+    }
+
+    auto pdfPage = doc.GetPage(page);
+    auto pageSize = pdfPage.Size();
+
+    // Cap dimensions to prevent memory issues
+    double maxDim = 3000.0;
+    double effectiveScale = scale;
+    if (pageSize.Width * scale > maxDim || pageSize.Height * scale > maxDim) {
+      effectiveScale = std::min(maxDim / pageSize.Width, maxDim / pageSize.Height);
+    }
+
+    // Render to an InMemoryRandomAccessStream as PNG image
+    auto renderStream = InMemoryRandomAccessStream();
+    PdfPageRenderOptions options;
+    options.DestinationWidth((uint32_t)(pageSize.Width * effectiveScale));
+    options.DestinationHeight((uint32_t)(pageSize.Height * effectiveScale));
+    // White background
+    Windows::UI::Color white;
+    white.A = 255; white.R = 255; white.G = 255; white.B = 255;
+    options.BackgroundColor(white);
+    pdfPage.RenderToStreamAsync(renderStream, options).get();
+    pdfPage.Close();
+
+    // Read rendered PNG stream into bytes
+    renderStream.Seek(0);
+    uint32_t size = (uint32_t)renderStream.Size();
+    auto reader = DataReader(renderStream);
+    reader.LoadAsync(size).get();
+    std::vector<uint8_t> img_bytes(size);
+    reader.ReadBytes(img_bytes);
+    reader.DetachStream();
+
+    // Compress to JPEG using GDI+ (input is PNG from WinRT)
+    auto jpeg_bytes = CompressToJpeg(img_bytes, 85);
+    if (jpeg_bytes.empty()) {
+      // Return PNG bytes directly if JPEG compression fails
+      result->Success(flutter::EncodableValue(img_bytes));
+    } else {
+      result->Success(flutter::EncodableValue(jpeg_bytes));
+    }
+  } catch (const hresult_error& e) {
+    result->Error("PDF_RENDER_FAILED", winrt::to_string(e.message()));
+  } catch (const std::exception& e) {
+    result->Error("PDF_RENDER_FAILED", e.what());
+  }
+}
+
+void FlutterOcrNativePlugin::GetPdfPageCount(
+    const std::vector<uint8_t>& bytes,
+    std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>> result) {
+  try {
+    auto stream = InMemoryRandomAccessStream();
+    auto writer = DataWriter(stream.GetOutputStreamAt(0));
+    writer.WriteBytes(array_view<const uint8_t>(bytes));
+    writer.StoreAsync().get();
+    writer.FlushAsync().get();
+    writer.DetachStream();
+    stream.Seek(0);
+
+    auto doc = PdfDocument::LoadFromStreamAsync(stream).get();
+    result->Success(flutter::EncodableValue((int)doc.PageCount()));
+  } catch (const hresult_error& e) {
+    result->Error("PDF_READ_FAILED", winrt::to_string(e.message()));
+  } catch (const std::exception& e) {
+    result->Error("PDF_READ_FAILED", e.what());
+  }
 }
 
 }  // namespace

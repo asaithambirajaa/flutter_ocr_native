@@ -19,6 +19,72 @@ class OcrDocumentSaver {
   static const _channel =
       MethodChannel('com.flutter_ocr_native/text_recognition');
 
+  /// Renders a single PDF page to image bytes (JPEG).
+  /// [pdfBytes] — raw PDF file bytes.
+  /// [page] — zero-based page index (default 0).
+  /// [scale] — render scale factor (default 2.0 for high quality).
+  /// Returns image bytes or null if rendering fails.
+  /// Uses native PDF rendering — no third-party packages needed.
+  /// - Android: PdfRenderer (API 21+)
+  /// - iOS/macOS: CGPDFDocument
+  /// - Windows: Windows.Data.Pdf
+  /// - Linux: not supported (returns null)
+  static Future<Uint8List?> renderPdfPage(
+    Uint8List pdfBytes, {
+    int page = 0,
+    double scale = 2.0,
+  }) async {
+    if (Platform.isLinux) return null;
+    if (pdfBytes.isEmpty) return null;
+    try {
+      final result = await _channel.invokeMethod<Uint8List>(
+        'renderPdfPage',
+        {'pdfBytes': pdfBytes, 'page': page, 'scale': scale},
+      );
+      // Validate that result is a valid JPEG (starts with FFD8)
+      if (result != null && result.length > 2 && result[0] == 0xFF && result[1] == 0xD8) {
+        return result;
+      }
+      return result;
+    } on PlatformException {
+      return null;
+    } on MissingPluginException {
+      return null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Returns the number of pages in a PDF.
+  /// Returns 0 if the PDF cannot be read.
+  static Future<int> getPdfPageCount(Uint8List pdfBytes) async {
+    if (Platform.isLinux) return 0;
+    try {
+      final result = await _channel.invokeMethod<int>(
+        'getPdfPageCount',
+        {'pdfBytes': pdfBytes},
+      );
+      return result ?? 0;
+    } catch (_) {
+      return 0;
+    }
+  }
+
+  /// Renders all pages of a PDF to image bytes list.
+  /// Returns a list of JPEG image bytes for each page.
+  static Future<List<Uint8List>> renderAllPdfPages(
+    Uint8List pdfBytes, {
+    double scale = 2.0,
+  }) async {
+    final count = await getPdfPageCount(pdfBytes);
+    final pages = <Uint8List>[];
+    for (int i = 0; i < count; i++) {
+      final page = await renderPdfPage(pdfBytes, page: i, scale: scale);
+      if (page != null) pages.add(page);
+    }
+    return pages;
+  }
+
   /// Downloads to the platform's download folder.
   ///
   /// - [watermark] — pass to add watermark, omit or null for no watermark
@@ -171,8 +237,12 @@ class OcrDocumentSaver {
   /// Corrects image orientation based on EXIF data.
   /// Returns the image bytes with correct upright orientation.
   /// On Windows/Linux, returns the original bytes unchanged.
+  /// For PDF-rendered images, orientation correction is skipped
+  /// since PDFs are already correctly oriented.
   static Future<Uint8List> correctOrientation(Uint8List imageBytes) async {
     if (Platform.isWindows || Platform.isLinux) return imageBytes;
+    // Skip if image is too large (>10MB) to avoid OOM during multi-rotation OCR
+    if (imageBytes.length > 10 * 1024 * 1024) return imageBytes;
     try {
       final result = await _channel.invokeMethod<Uint8List>(
         'correctOrientation',

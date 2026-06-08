@@ -25,6 +25,24 @@ class OcrMethodChannel implements OcrPlatformInterface {
   }
 
   @override
+  Future<Uint8List?> renderPdfPage(Uint8List pdfBytes, {int page = 0, double scale = 2.0}) async {
+    final result = await _channel.invokeMethod<Uint8List>(
+      'renderPdfPage',
+      {'pdfBytes': pdfBytes, 'page': page, 'scale': scale},
+    );
+    return result;
+  }
+
+  @override
+  Future<int> getPdfPageCount(Uint8List pdfBytes) async {
+    final result = await _channel.invokeMethod<int>(
+      'getPdfPageCount',
+      {'pdfBytes': pdfBytes},
+    );
+    return result ?? 0;
+  }
+
+  @override
   Future<void> dispose() async {
     await _channel.invokeMethod('dispose');
   }
