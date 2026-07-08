@@ -1,3 +1,11 @@
+## 0.4.0
+
+* **Swift Package Manager support (iOS & macOS)** — the plugin can now be consumed via SPM in projects that enable Flutter's Swift Package Manager integration (`flutter config --enable-swift-package-manager`)
+  - iOS and macOS sources migrated to the SPM layout (`{platform}/flutter_ocr_native/Sources/flutter_ocr_native/`)
+  - Added `Package.swift` manifests for both platforms
+  - CocoaPods remains fully supported — podspecs updated to point to the new source location
+  - Added `PrivacyInfo.xcprivacy` privacy manifests
+
 ## 0.3.0
 
 * **Native PDF to image conversion** — render PDF pages to images without any third-party Dart package
