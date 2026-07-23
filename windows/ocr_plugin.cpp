@@ -214,6 +214,14 @@ void FlutterOcrNativePlugin::RecognizeFromPath(
 void FlutterOcrNativePlugin::RecognizeFromBytes(
     const std::vector<uint8_t>& bytes,
     std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>> result) {
+  // Auto-reinitialize OCR engine if not available
+  if (!ocr_engine_) {
+    ocr_engine_ = ocr::OcrEngine::TryCreateFromLanguage(
+        globalization::Language(L"en-US"));
+    if (!ocr_engine_) {
+      ocr_engine_ = ocr::OcrEngine::TryCreateFromUserProfileLanguages();
+    }
+  }
   if (!ocr_engine_) {
     result->Error("NOT_INITIALIZED", "OCR engine not available");
     return;

@@ -157,11 +157,8 @@ class VoterIdDetails {
       if (line.length < 2) continue;
       // Skip if it's just initials
       if (RegExp(r'^[A-Z]\s+[A-Z]\s*$').hasMatch(line)) continue;
-      if (name == null) {
-        name = line;
-      } else if (fatherName == null) {
-        fatherName = line;
-      }
+      name ??= line;
+      if (name != line) fatherName ??= line;
     }
 
     // Fallback: if no name found, take the longest potential line

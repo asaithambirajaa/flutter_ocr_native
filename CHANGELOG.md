@@ -1,3 +1,13 @@
+## 0.3.2
+
+### Bug Fixes
+
+* **Fixed `NOT_INITIALIZED` crash on re-upload (Android, Windows, Linux)** — scanning a second image after the first scan threw `PlatformException(NOT_INITIALIZED, Recognizer not initialized)`
+  - **Android**: `processImage()` now lazily recreates `TextRecognizer` if null — seamless re-use after `dispose()`
+  - **Windows**: `RecognizeFromBytes()` now lazily recreates `OcrEngine` if null — recovers from failed init or unexpected null state
+  - **Linux**: `recognize()` now lazily reinitializes `TessBaseAPI` if null — recovers from failed init or dispose
+  - **iOS/macOS**: unaffected — Vision framework creates a fresh `VNRecognizeTextRequest` per call with no persistent state
+
 ## 0.3.1
 
 ### Bug Fixes

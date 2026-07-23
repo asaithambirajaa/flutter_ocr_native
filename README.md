@@ -38,7 +38,7 @@ A Flutter plugin for extracting text from images **and PDFs** using native on-de
 
 ```yaml
 dependencies:
-  flutter_ocr_native: ^0.3.1
+  flutter_ocr_native: ^0.3.2
 ```
 
 ### Android

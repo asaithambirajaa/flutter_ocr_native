@@ -322,7 +322,7 @@ class OcrPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
             }
             "dispose" -> {
                 recognizer?.close()
-                recognizer = null
+                recognizer = null  // will be lazily recreated on next scan
                 result.success(null)
             }
             "renderPdfPage" -> {
@@ -349,11 +349,11 @@ class OcrPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
     }
 
     private fun processImage(image: InputImage, bitmap: Bitmap, result: MethodChannel.Result) {
-        val rec = recognizer
-        if (rec == null) {
-            result.error("NOT_INITIALIZED", "Recognizer not initialized", null)
-            return
+        // Auto-reinitialize if disposed and reused
+        if (recognizer == null) {
+            recognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
         }
+        val rec = recognizer!!
 
         rec.process(image)
             .addOnSuccessListener { visionText ->

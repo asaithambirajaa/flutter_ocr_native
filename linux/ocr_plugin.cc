@@ -66,6 +66,15 @@ static bool is_english(const std::string& text) {
 
 // OCR recognition
 static FlMethodResponse* recognize(FlutterOcrNativePlugin* self, const uint8_t* data, size_t len) {
+  // Auto-reinitialize Tesseract if null (e.g. after dispose or failed init)
+  if (!self->tess) {
+    self->tess = new tesseract::TessBaseAPI();
+    if (self->tess->Init(nullptr, "eng") != 0) {
+      delete self->tess;
+      self->tess = nullptr;
+      return FL_METHOD_RESPONSE(fl_method_error_response_new("NOT_INITIALIZED", "Tesseract init failed", nullptr));
+    }
+  }
   Pix* pix = pix_from_bytes(data, len);
   if (!pix) {
     return FL_METHOD_RESPONSE(fl_method_error_response_new("DECODE_ERROR", "Could not decode image", nullptr));
