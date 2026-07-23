@@ -1,5 +1,5 @@
-import Cocoa
-import FlutterMacOS
+import Flutter
+import UIKit
 import Vision
 
 public class OcrPlugin: NSObject, FlutterPlugin {
@@ -7,7 +7,7 @@ public class OcrPlugin: NSObject, FlutterPlugin {
     private let aadhaarPattern = try! NSRegularExpression(pattern: "(\\d{4})[\\s\\-]*(\\d{4})[\\s\\-]*(\\d{4})")
 
     public static func register(with registrar: FlutterPluginRegistrar) {
-        let channel = FlutterMethodChannel(name: "com.flutter_ocr_native/text_recognition", binaryMessenger: registrar.messenger)
+        let channel = FlutterMethodChannel(name: "com.flutter_ocr_native/text_recognition", binaryMessenger: registrar.messenger())
         let instance = OcrPlugin()
         registrar.addMethodCallDelegate(instance, channel: channel)
     }
@@ -18,8 +18,8 @@ public class OcrPlugin: NSObject, FlutterPlugin {
         switch call.method {
         case "recognizeFromPath":
             guard let path = args?["imagePath"] as? String,
-                  let nsImage = NSImage(contentsOfFile: path),
-                  let cgImage = nsImage.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
+                  let uiImage = UIImage(contentsOfFile: path),
+                  let cgImage = uiImage.cgImage else {
                 result(FlutterError(code: "INVALID_ARG", message: "Invalid image path", details: nil))
                 return
             }
@@ -27,8 +27,8 @@ public class OcrPlugin: NSObject, FlutterPlugin {
 
         case "recognizeFromBytes":
             guard let bytes = args?["bytes"] as? FlutterStandardTypedData,
-                  let nsImage = NSImage(data: bytes.data),
-                  let cgImage = nsImage.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
+                  let uiImage = UIImage(data: bytes.data),
+                  let cgImage = uiImage.cgImage else {
                 result(FlutterError(code: "INVALID_ARG", message: "Invalid image bytes", details: nil))
                 return
             }
@@ -38,30 +38,30 @@ public class OcrPlugin: NSObject, FlutterPlugin {
             guard let args = call.arguments as? [String: Any],
                   let bytes = args["imageBytes"] as? FlutterStandardTypedData,
                   let lines = args["lines"] as? [String: String],
-                  let nsImage = NSImage(data: bytes.data) else {
+                  let uiImage = UIImage(data: bytes.data) else {
                 result(FlutterError(code: "INVALID_ARG", message: "imageBytes and lines required", details: nil))
                 return
             }
             let quality = args["quality"] as? Int ?? 90
-            let output = burnWatermarkOnImage(nsImage, lines: lines, quality: quality)
+            let output = burnWatermarkOnImage(uiImage, lines: lines, quality: quality)
             result(output)
 
         case "compressImage":
             guard let args = call.arguments as? [String: Any],
                   let bytes = args["imageBytes"] as? FlutterStandardTypedData,
-                  let nsImage = NSImage(data: bytes.data) else {
+                  let uiImage = UIImage(data: bytes.data) else {
                 result(FlutterError(code: "INVALID_ARG", message: "imageBytes required", details: nil))
                 return
             }
             let quality = args["quality"] as? Int ?? 80
-            let compressed = compressToJpeg(nsImage, quality: quality)
-            result(compressed)
+            let compressed = uiImage.jpegData(compressionQuality: CGFloat(quality) / 100.0)
+            result(compressed.map { FlutterStandardTypedData(bytes: $0) })
 
         case "extractFace":
             guard let args = call.arguments as? [String: Any],
                   let bytes = args["imageBytes"] as? FlutterStandardTypedData,
-                  let nsImage = NSImage(data: bytes.data),
-                  let cgImage = nsImage.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
+                  let uiImage = UIImage(data: bytes.data),
+                  let cgImage = uiImage.cgImage else {
                 result(FlutterError(code: "INVALID_ARG", message: "imageBytes required", details: nil))
                 return
             }
@@ -70,8 +70,8 @@ public class OcrPlugin: NSObject, FlutterPlugin {
         case "cropImage":
             guard let args = call.arguments as? [String: Any],
                   let bytes = args["imageBytes"] as? FlutterStandardTypedData,
-                  let nsImage = NSImage(data: bytes.data),
-                  let cgImage = nsImage.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
+                  let uiImage = UIImage(data: bytes.data),
+                  let cgImage = uiImage.cgImage else {
                 result(FlutterError(code: "INVALID_ARG", message: "imageBytes required", details: nil))
                 return
             }
@@ -79,58 +79,59 @@ public class OcrPlugin: NSObject, FlutterPlugin {
             let y = args["y"] as? Int ?? 0
             let width = args["width"] as? Int ?? 0
             let height = args["height"] as? Int ?? 0
+
             let cropRect = CGRect(x: x, y: y, width: width, height: height)
             guard let cropped = cgImage.cropping(to: cropRect) else {
                 result(nil)
                 return
             }
-            let size = NSSize(width: cropped.width, height: cropped.height)
-            let croppedNS = NSImage(cgImage: cropped, size: size)
-            guard let tiff = croppedNS.tiffRepresentation,
-                  let bitmap = NSBitmapImageRep(data: tiff),
-                  let jpeg = bitmap.representation(using: .jpeg, properties: [.compressionFactor: 0.9]) else {
+            let croppedImage = UIImage(cgImage: cropped)
+            guard let jpegData = croppedImage.jpegData(compressionQuality: 0.9) else {
                 result(nil)
                 return
             }
-            result(FlutterStandardTypedData(bytes: jpeg))
+            result(FlutterStandardTypedData(bytes: jpegData))
 
         case "rotateImage":
             guard let args = call.arguments as? [String: Any],
                   let bytes = args["imageBytes"] as? FlutterStandardTypedData,
-                  let nsImage = NSImage(data: bytes.data) else {
+                  let uiImage = UIImage(data: bytes.data) else {
                 result(FlutterError(code: "INVALID_ARG", message: "imageBytes required", details: nil))
                 return
             }
             let degrees = args["degrees"] as? Int ?? 90
             let radians = CGFloat(degrees) * .pi / 180.0
-            let srcSize = nsImage.size
-            let newSize = NSSize(
-                width: abs(srcSize.width * cos(radians)) + abs(srcSize.height * sin(radians)),
-                height: abs(srcSize.width * sin(radians)) + abs(srcSize.height * cos(radians))
+            let rotatedSize = CGSize(
+                width: abs(uiImage.size.width * cos(radians)) + abs(uiImage.size.height * sin(radians)),
+                height: abs(uiImage.size.width * sin(radians)) + abs(uiImage.size.height * cos(radians))
             )
-            let rotatedImage = NSImage(size: newSize)
-            rotatedImage.lockFocus()
-            let transform = NSAffineTransform()
-            transform.translateX(by: newSize.width / 2, yBy: newSize.height / 2)
-            transform.rotate(byDegrees: CGFloat(degrees))
-            transform.translateX(by: -srcSize.width / 2, yBy: -srcSize.height / 2)
-            transform.concat()
-            nsImage.draw(in: NSRect(origin: .zero, size: srcSize))
-            rotatedImage.unlockFocus()
-            guard let tiff = rotatedImage.tiffRepresentation,
-                  let bitmap = NSBitmapImageRep(data: tiff),
-                  let jpeg = bitmap.representation(using: .jpeg, properties: [.compressionFactor: 0.9]) else {
+            UIGraphicsBeginImageContextWithOptions(rotatedSize, false, 1.0)
+            let context = UIGraphicsGetCurrentContext()!
+            context.translateBy(x: rotatedSize.width / 2, y: rotatedSize.height / 2)
+            context.rotate(by: radians)
+            uiImage.draw(in: CGRect(x: -uiImage.size.width / 2, y: -uiImage.size.height / 2, width: uiImage.size.width, height: uiImage.size.height))
+            let rotated = UIGraphicsGetImageFromCurrentImageContext()
+            UIGraphicsEndImageContext()
+            guard let rotatedImg = rotated, let jpegRotated = rotatedImg.jpegData(compressionQuality: 0.9) else {
                 result(nil)
                 return
             }
-            result(FlutterStandardTypedData(bytes: jpeg))
+            result(FlutterStandardTypedData(bytes: jpegRotated))
 
         case "correctOrientation":
             guard let args = call.arguments as? [String: Any],
                   let bytes = args["imageBytes"] as? FlutterStandardTypedData,
-                  let nsImage = NSImage(data: bytes.data),
-                  let cgBase = nsImage.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
+                  let uiImage = UIImage(data: bytes.data) else {
                 result(FlutterError(code: "INVALID_ARG", message: "imageBytes required", details: nil))
+                return
+            }
+            // First apply EXIF orientation
+            let fmt = UIGraphicsImageRendererFormat()
+            fmt.scale = 1.0
+            let renderer = UIGraphicsImageRenderer(size: uiImage.size, format: fmt)
+            let normalized = renderer.image { _ in uiImage.draw(at: .zero) }
+            guard let cgBase = normalized.cgImage else {
+                result(FlutterStandardTypedData(bytes: bytes.data))
                 return
             }
 
@@ -149,9 +150,7 @@ public class OcrPlugin: NSObject, FlutterPlugin {
                 // If original has good readable text, keep it
                 if originalObs.count >= 2 && originalScore > 5.0 {
                     DispatchQueue.main.async {
-                        guard let tiff = nsImage.tiffRepresentation,
-                              let bmp = NSBitmapImageRep(data: tiff),
-                              let jpeg = bmp.representation(using: .jpeg, properties: [.compressionFactor: 0.95]) else {
+                        guard let jpeg = normalized.jpegData(compressionQuality: 0.95) else {
                             result(FlutterStandardTypedData(bytes: bytes.data))
                             return
                         }
@@ -208,32 +207,26 @@ public class OcrPlugin: NSObject, FlutterPlugin {
                 group.wait()
                 DispatchQueue.main.async {
                     if bestDegrees == 0 {
-                        guard let tiff = nsImage.tiffRepresentation,
-                              let bmp = NSBitmapImageRep(data: tiff),
-                              let jpeg = bmp.representation(using: .jpeg, properties: [.compressionFactor: 0.95]) else {
+                        guard let jpeg = normalized.jpegData(compressionQuality: 0.95) else {
                             result(FlutterStandardTypedData(bytes: bytes.data))
                             return
                         }
                         result(FlutterStandardTypedData(bytes: jpeg))
                     } else {
                         let radians = CGFloat(bestDegrees) * .pi / 180.0
-                        let srcSize = nsImage.size
-                        let newSize = NSSize(
-                            width: abs(srcSize.width * cos(radians)) + abs(srcSize.height * sin(radians)),
-                            height: abs(srcSize.width * sin(radians)) + abs(srcSize.height * cos(radians))
+                        let w = normalized.size.width
+                        let h = normalized.size.height
+                        let newSize = CGSize(
+                            width: abs(w * cos(radians)) + abs(h * sin(radians)),
+                            height: abs(w * sin(radians)) + abs(h * cos(radians))
                         )
-                        let rotatedImage = NSImage(size: newSize)
-                        rotatedImage.lockFocus()
-                        let transform = NSAffineTransform()
-                        transform.translateX(by: newSize.width / 2, yBy: newSize.height / 2)
-                        transform.rotate(byDegrees: CGFloat(bestDegrees))
-                        transform.translateX(by: -srcSize.width / 2, yBy: -srcSize.height / 2)
-                        transform.concat()
-                        nsImage.draw(in: NSRect(origin: .zero, size: srcSize))
-                        rotatedImage.unlockFocus()
-                        guard let tiff = rotatedImage.tiffRepresentation,
-                              let bmp = NSBitmapImageRep(data: tiff),
-                              let jpeg = bmp.representation(using: .jpeg, properties: [.compressionFactor: 0.95]) else {
+                        let r = UIGraphicsImageRenderer(size: newSize, format: fmt)
+                        let rotatedImg = r.image { ctx in
+                            ctx.cgContext.translateBy(x: newSize.width / 2, y: newSize.height / 2)
+                            ctx.cgContext.rotate(by: radians)
+                            normalized.draw(in: CGRect(x: -w / 2, y: -h / 2, width: w, height: h))
+                        }
+                        guard let jpeg = rotatedImg.jpegData(compressionQuality: 0.95) else {
                             result(FlutterStandardTypedData(bytes: bytes.data))
                             return
                         }
@@ -311,9 +304,10 @@ public class OcrPlugin: NSObject, FlutterPlugin {
             }
 
             // White background
-            ctx.setFillColor(CGColor(red: 1, green: 1, blue: 1, alpha: 1))
+            ctx.setFillColor(UIColor.white.cgColor)
             ctx.fill(CGRect(x: 0, y: 0, width: width, height: height))
 
+            // Scale and draw PDF page
             ctx.scaleBy(x: effectiveScale, y: effectiveScale)
             ctx.drawPDFPage(pdfPage)
 
@@ -322,17 +316,14 @@ public class OcrPlugin: NSObject, FlutterPlugin {
                 return
             }
 
-            let size = NSSize(width: width, height: height)
-            let nsImage = NSImage(cgImage: cgImage, size: size)
-            guard let tiff = nsImage.tiffRepresentation,
-                  let bitmap = NSBitmapImageRep(data: tiff),
-                  let jpeg = bitmap.representation(using: .jpeg, properties: [.compressionFactor: 0.85]) else {
+            let uiImage = UIImage(cgImage: cgImage)
+            guard let jpegData = uiImage.jpegData(compressionQuality: 0.85) else {
                 DispatchQueue.main.async { result(nil) }
                 return
             }
 
             DispatchQueue.main.async {
-                result(FlutterStandardTypedData(bytes: jpeg))
+                result(FlutterStandardTypedData(bytes: jpegData))
             }
         }
     }
@@ -346,25 +337,24 @@ public class OcrPlugin: NSObject, FlutterPlugin {
     }
 
     private func isEnglish(_ text: String) -> Bool {
+        // Must contain only ASCII printable characters
         guard text.allSatisfy({ $0.asciiValue != nil && $0.asciiValue! >= 32 && $0.asciiValue! <= 126 }) else {
             return false
         }
+
+        // Must have at least one letter or digit
         guard text.contains(where: { $0.isLetter || $0.isNumber }) else {
             return false
         }
 
-        // Always keep tokens that contain digits (IDs, PAN numbers, dates, codes)
-        // PAN like BWPPM8548F has no vowels but is valid — must not be filtered
-        if text.contains(where: { $0.isNumber }) { return true }
-
-        // Only apply vowel check to pure-letter strings of 5+ chars
-        // This rejects Hindi/non-Latin words while keeping short abbreviations (DEPT, GOVT)
+        // For words with 4+ letters, must contain a vowel
         let letters = text.filter { $0.isLetter }
-        if letters.count >= 5 {
+        if letters.count >= 4 {
             let vowels = CharacterSet(charactersIn: "aeiouAEIOU")
             let hasVowel = letters.unicodeScalars.contains(where: { vowels.contains($0) })
             if !hasVowel { return false }
         }
+
         return true
     }
 
@@ -448,6 +438,8 @@ public class OcrPlugin: NSObject, FlutterPlugin {
     private func maskAadhaarOnImage(image: CGImage, observations: [VNRecognizedTextObservation]) -> FlutterStandardTypedData? {
         let imageWidth = CGFloat(image.width)
         let imageHeight = CGFloat(image.height)
+
+        // Find observation containing Aadhaar number
         var maskRect: CGRect? = nil
 
         for observation in observations {
@@ -455,6 +447,7 @@ public class OcrPlugin: NSObject, FlutterPlugin {
             let text = candidate.string
             let nsText = text as NSString
             let range = NSRange(location: 0, length: nsText.length)
+
             guard let match = aadhaarPattern.firstMatch(in: text, range: range) else { continue }
 
             let box = observation.boundingBox
@@ -465,42 +458,59 @@ public class OcrPlugin: NSObject, FlutterPlugin {
                 height: box.height * imageHeight
             )
 
+            // Calculate proportional mask area (first 8 digits)
+            let matchRange = match.range
             let last4Range = match.range(at: 3)
             let charWidth = obsRect.width / CGFloat(nsText.length)
-            let maskLeft = obsRect.origin.x + CGFloat(match.range.location) * charWidth
+
+            let maskLeft = obsRect.origin.x + CGFloat(matchRange.location) * charWidth
             let maskRight = obsRect.origin.x + CGFloat(last4Range.location) * charWidth
 
-            maskRect = CGRect(x: maskLeft, y: obsRect.origin.y, width: maskRight - maskLeft, height: obsRect.height)
+            maskRect = CGRect(
+                x: maskLeft,
+                y: obsRect.origin.y,
+                width: maskRight - maskLeft,
+                height: obsRect.height
+            )
             break
         }
 
         guard let rect = maskRect else { return nil }
 
-        let size = NSSize(width: imageWidth, height: imageHeight)
-        let nsImage = NSImage(size: size)
-        nsImage.lockFocus()
+        // Draw mask on image
+        let size = CGSize(width: imageWidth, height: imageHeight)
+        UIGraphicsBeginImageContext(size)
+        guard let ctx = UIGraphicsGetCurrentContext() else { return nil }
 
-        let ctx = NSGraphicsContext.current!.cgContext
+        // Flip context for CGImage drawing
+        ctx.translateBy(x: 0, y: imageHeight)
+        ctx.scaleBy(x: 1, y: -1)
         ctx.draw(image, in: CGRect(origin: .zero, size: size))
 
+        // Flip back for rect drawing
+        ctx.scaleBy(x: 1, y: -1)
+        ctx.translateBy(x: 0, y: -imageHeight)
+
+        // Draw black rectangle with padding
         let padX = rect.width * 0.03
         let padY = rect.height * 0.1
-        ctx.setFillColor(NSColor.black.cgColor)
-        ctx.fill(CGRect(
+        let paddedRect = CGRect(
             x: max(rect.origin.x - padX, 0),
             y: max(rect.origin.y - padY, 0),
             width: min(rect.width + padX * 2, imageWidth),
             height: min(rect.height + padY * 2, imageHeight)
-        ))
+        )
+        ctx.setFillColor(UIColor.black.cgColor)
+        ctx.fill(paddedRect)
 
-        nsImage.unlockFocus()
-
-        guard let tiff = nsImage.tiffRepresentation,
-              let bitmap = NSBitmapImageRep(data: tiff),
-              let jpeg = bitmap.representation(using: .jpeg, properties: [.compressionFactor: 0.9]) else {
+        guard let maskedImage = UIGraphicsGetImageFromCurrentImageContext(),
+              let jpegData = maskedImage.jpegData(compressionQuality: 0.9) else {
+            UIGraphicsEndImageContext()
             return nil
         }
-        return FlutterStandardTypedData(bytes: jpeg)
+        UIGraphicsEndImageContext()
+
+        return FlutterStandardTypedData(bytes: jpegData)
     }
 
     private func detectPrinted(observations: [VNRecognizedTextObservation]) -> Bool {
@@ -508,7 +518,7 @@ public class OcrPlugin: NSObject, FlutterPlugin {
 
         // Exclude MICR-like observations: bottom of image, mostly digits, low confidence
         let filtered = observations.filter { obs in
-            let isAtBottom = obs.boundingBox.origin.y < 0.25
+            let isAtBottom = obs.boundingBox.origin.y < 0.25 // Vision uses bottom-left origin
             let text = obs.topCandidates(1).first?.string ?? ""
             let digitRatio = text.isEmpty ? 0.0 : Double(text.filter { $0.isNumber }.count) / Double(text.count)
             let isMostlyDigits = digitRatio > 0.6
@@ -521,63 +531,58 @@ public class OcrPlugin: NSObject, FlutterPlugin {
 
         let confidences = filtered.compactMap { $0.topCandidates(1).first?.confidence }
         if confidences.isEmpty { return true }
-        let avg = Double(confidences.reduce(0, +)) / Double(confidences.count)
-        let lowCount = confidences.filter { $0 < 0.5 }.count
-        let lowRatio = Double(lowCount) / Double(confidences.count)
-        return (avg * 0.5 + (1.0 - lowRatio) * 0.5) > 0.45
+
+        let avgConfidence = Double(confidences.reduce(0, +)) / Double(confidences.count)
+        let lowConfCount = confidences.filter { $0 < 0.5 }.count
+        let lowConfRatio = Double(lowConfCount) / Double(confidences.count)
+
+        let score = (avgConfidence * 0.5) + ((1.0 - lowConfRatio) * 0.5)
+        return score > 0.45
     }
 
-    private func burnWatermarkOnImage(_ image: NSImage, lines: [String: String], quality: Int) -> FlutterStandardTypedData? {
+    private func burnWatermarkOnImage(_ image: UIImage, lines: [String: String],
+        quality: Int) -> FlutterStandardTypedData? {
+
         let scaledFontSize = max(image.size.width * 0.03, 36)
         let scaledPadH = image.size.width * 0.02
         let scaledPadV = image.size.width * 0.015
         let lineHeight = scaledFontSize * 1.5
         let wmHeight = CGFloat(lines.count) * lineHeight + scaledPadV * 2
-        let totalSize = NSSize(width: image.size.width, height: image.size.height + wmHeight)
+        let totalSize = CGSize(width: image.size.width, height: image.size.height + wmHeight)
 
-        let outputImage = NSImage(size: totalSize)
-        outputImage.lockFocus()
+        UIGraphicsBeginImageContextWithOptions(totalSize, false, image.scale)
+        guard UIGraphicsGetCurrentContext() != nil else { return nil }
 
-        image.draw(at: .zero, from: NSRect(origin: .zero, size: image.size), operation: .copy, fraction: 1.0)
+        image.draw(at: .zero)
 
-        NSColor(red: 0, green: 0, blue: 0, alpha: 0.7).setFill()
-        NSRect(x: 0, y: 0, width: totalSize.width, height: wmHeight).fill()
+        UIColor(red: 0, green: 0, blue: 0, alpha: 0.7).setFill()
+        UIRectFill(CGRect(x: 0, y: image.size.height, width: totalSize.width, height: wmHeight))
 
-        // Note: macOS coordinate system is flipped (origin bottom-left)
-        // Draw watermark at the bottom
         let attrs: [NSAttributedString.Key: Any] = [
-            .font: NSFont.boldSystemFont(ofSize: scaledFontSize),
-            .foregroundColor: NSColor(red: 1, green: 1, blue: 1, alpha: 0.8)
+            .font: UIFont.boldSystemFont(ofSize: scaledFontSize),
+            .foregroundColor: UIColor(red: 1, green: 1, blue: 1, alpha: 0.8)
         ]
-        var y = scaledPadV
+        var y = image.size.height + scaledPadV
         for (key, value) in lines {
             let text = "\(key): \(value)" as NSString
-            text.draw(at: NSPoint(x: scaledPadH, y: y), withAttributes: attrs)
+            text.draw(at: CGPoint(x: scaledPadH, y: y), withAttributes: attrs)
             y += lineHeight
         }
 
-        outputImage.unlockFocus()
-
-        guard let tiff = outputImage.tiffRepresentation,
-              let bitmap = NSBitmapImageRep(data: tiff) else { return nil }
+        guard let output = UIGraphicsGetImageFromCurrentImageContext() else {
+            UIGraphicsEndImageContext()
+            return nil
+        }
+        UIGraphicsEndImageContext()
 
         let data: Data?
         if quality < 100 {
-            data = bitmap.representation(using: .jpeg, properties: [.compressionFactor: CGFloat(quality) / 100.0])
+            data = output.jpegData(compressionQuality: CGFloat(quality) / 100.0)
         } else {
-            data = bitmap.representation(using: .png, properties: [:])
+            data = output.pngData()
         }
         guard let finalData = data else { return nil }
         return FlutterStandardTypedData(bytes: finalData)
-    }
-
-    private func compressToJpeg(_ image: NSImage, quality: Int) -> FlutterStandardTypedData? {
-        guard let tiff = image.tiffRepresentation,
-              let bitmap = NSBitmapImageRep(data: tiff),
-              let jpeg = bitmap.representation(using: .jpeg, properties: [.compressionFactor: CGFloat(quality) / 100.0]) else {
-            return nil
-        }
-        return FlutterStandardTypedData(bytes: jpeg)
     }
 
     private func extractFace(from image: CGImage, result: @escaping FlutterResult) {
@@ -592,17 +597,20 @@ public class OcrPlugin: NSObject, FlutterPlugin {
                 return
             }
 
+            // Get the largest face
             let face = faces.max(by: { $0.boundingBox.width * $0.boundingBox.height < $1.boundingBox.width * $1.boundingBox.height })!
             let box = face.boundingBox
 
             let imageWidth = CGFloat(image.width)
             let imageHeight = CGFloat(image.height)
 
+            // Convert normalized coords to pixel coords
             let faceX = box.origin.x * imageWidth
             let faceY = (1 - box.origin.y - box.height) * imageHeight
             let faceW = box.width * imageWidth
             let faceH = box.height * imageHeight
 
+            // Add padding
             let padX = faceW * 0.2
             let padY = faceH * 0.3
             let cropRect = CGRect(
@@ -617,16 +625,13 @@ public class OcrPlugin: NSObject, FlutterPlugin {
                 return
             }
 
-            let size = NSSize(width: cropped.width, height: cropped.height)
-            let nsImage = NSImage(cgImage: cropped, size: size)
-            guard let tiff = nsImage.tiffRepresentation,
-                  let bitmap = NSBitmapImageRep(data: tiff),
-                  let jpeg = bitmap.representation(using: .jpeg, properties: [.compressionFactor: 0.9]) else {
+            let uiImage = UIImage(cgImage: cropped)
+            guard let jpegData = uiImage.jpegData(compressionQuality: 0.9) else {
                 result(nil)
                 return
             }
 
-            result(FlutterStandardTypedData(bytes: jpeg))
+            result(FlutterStandardTypedData(bytes: jpegData))
         }
 
         let handler = VNImageRequestHandler(cgImage: image, options: [:])

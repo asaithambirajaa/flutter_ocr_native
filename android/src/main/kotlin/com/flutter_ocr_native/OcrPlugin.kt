@@ -602,8 +602,16 @@ class OcrPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
         val alphaNum = normalized.count { it.isLetterOrDigit() }
         if (alphaNum == 0) return false
 
+        // Always keep PAN-like tokens: 5 letters + 4 digits + 1 letter (no vowels needed)
+        if (Regex("[A-Z]{5}\\d{4}[A-Z]").containsMatchIn(normalized.uppercase())) return true
+
+        // Always keep pure alphanumeric tokens (IDs, codes, dates, numbers)
+        val hasDigits = normalized.any { it.isDigit() }
+        if (hasDigits) return true
+
+        // Only apply vowel check to pure letter strings (rejects Hindi/non-Latin words)
         val letters = normalized.replace(Regex("[^A-Za-z]"), "")
-        if (letters.length >= 4 && !letters.contains(Regex("[aeiouAEIOU]"))) return false
+        if (letters.length >= 5 && !letters.contains(Regex("[aeiouAEIOU]"))) return false
 
         return true
     }

@@ -22,6 +22,7 @@ A Flutter plugin for extracting text from images **and PDFs** using native on-de
 - **Unified `DocumentDetails` model** — single API for all document types
 - Aadhaar number masking (text + image) — configurable
 - Aadhaar & PAN number validation (Verhoeff checksum, format check)
+- **Bilingual PAN card support** — correctly extracts PAN numbers and fields from Hindi+English cards (e.g. `नाम / Name` layout) on Android, iOS, and macOS
 - Passport, Driving License, Voter ID, IFSC, Account number validation
 - **Face extraction** from document images (Android, iOS, macOS)
 - Handwriting detection — rejects non-printed documents
@@ -37,7 +38,7 @@ A Flutter plugin for extracting text from images **and PDFs** using native on-de
 
 ```yaml
 dependencies:
-  flutter_ocr_native: ^0.3.0
+  flutter_ocr_native: ^0.3.1
 ```
 
 ### Android
@@ -264,6 +265,8 @@ DocumentNumberValidator.isValidAccountNumber('12345678901');
 ```
 
 ### Document Details Parsing
+
+Works with both **old format** (English-only labels) and **new bilingual format** (Hindi + English labels like `नाम / Name`).
 
 ```dart
 // Aadhaar

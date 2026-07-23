@@ -347,9 +347,14 @@ public class OcrPlugin: NSObject, FlutterPlugin {
             return false
         }
 
-        // For words with 4+ letters, must contain a vowel
+        // Always keep tokens that contain digits (IDs, PAN numbers, dates, codes)
+        // PAN like BWPPM8548F has no vowels but is valid — must not be filtered
+        if text.contains(where: { $0.isNumber }) { return true }
+
+        // Only apply vowel check to pure-letter strings of 5+ chars
+        // This rejects Hindi/non-Latin words while keeping short abbreviations (DEPT, GOVT)
         let letters = text.filter { $0.isLetter }
-        if letters.count >= 4 {
+        if letters.count >= 5 {
             let vowels = CharacterSet(charactersIn: "aeiouAEIOU")
             let hasVowel = letters.unicodeScalars.contains(where: { vowels.contains($0) })
             if !hasVowel { return false }

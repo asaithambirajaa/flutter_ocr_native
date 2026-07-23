@@ -39,4 +39,41 @@ class OcrWatermark {
     this.fontSize = 12,
     this.padding = const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
   });
+
+  /// Creates a copy with optional new values.
+  OcrWatermark copyWith({
+    Map<String, String>? lines,
+    Color? textColor,
+    Color? backgroundColor,
+    double? fontSize,
+    EdgeInsets? padding,
+  }) {
+    return OcrWatermark(
+      lines: lines ?? this.lines,
+      textColor: textColor ?? this.textColor,
+      backgroundColor: backgroundColor ?? this.backgroundColor,
+      fontSize: fontSize ?? this.fontSize,
+      padding: padding ?? this.padding,
+    );
+  }
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is OcrWatermark &&
+          runtimeType == other.runtimeType &&
+          lines == other.lines &&
+          textColor == other.textColor &&
+          backgroundColor == other.backgroundColor &&
+          fontSize == other.fontSize &&
+          padding == other.padding;
+
+  @override
+  int get hashCode => Object.hash(
+        lines,
+        textColor,
+        backgroundColor,
+        fontSize,
+        padding,
+      );
 }

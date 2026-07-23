@@ -1,5 +1,3 @@
-import 'dart:developer';
-
 import '../validators/document_number_validator.dart';
 
 /// Parsed Voter ID (EPIC) details extracted from OCR text.
@@ -46,31 +44,21 @@ class VoterIdDetails {
 
     // Find date of birth
     final dobMatch = datePattern.firstMatch(text);
-    if (dobMatch != null) {
-      dob = dobMatch.group(1);
-    }
+    if (dobMatch != null) dob = dobMatch.group(1);
 
     // Find gender
     final genderMatch = genderPattern.firstMatch(text);
-    if (genderMatch != null) {
-      gender = genderMatch.group(1);
-    }
+    if (genderMatch != null) gender = genderMatch.group(1);
 
     // Extract name with better filtering
     final potentialNameLines = <String>[];
-
-    log('=== NAME EXTRACTION DEBUG ===');
-    log('Processing ${lines.length} lines for name extraction:');
 
     for (int i = 0; i < lines.length; i++) {
       final line = lines[i];
       final upper = line.toUpperCase();
 
-      log('Line $i: "$line"');
-
       // Check if line contains name after a label
       if (upper.contains('ELECTOR') && upper.contains('NAME')) {
-        // Extract name after "Elector's Name" or similar
         final nameMatch =
             RegExp(r"ELECTOR'?S?\s*NAME\s*:?\s*(.+)", caseSensitive: false)
                 .firstMatch(line);
@@ -79,7 +67,6 @@ class VoterIdDetails {
           if (extractedName != null &&
               extractedName.isNotEmpty &&
               extractedName.length > 2) {
-            log('  -> EXTRACTED NAME FROM LABEL: "$extractedName"');
             potentialNameLines.add(extractedName);
             continue;
           }
@@ -93,7 +80,6 @@ class VoterIdDetails {
           RegExp(r'ELECTOR\s*NAME\s*:?\s*(.+)', caseSensitive: false),
           RegExp(r'VOTER\s*NAME\s*:?\s*(.+)', caseSensitive: false),
         ];
-
         for (final pattern in namePatterns) {
           final match = pattern.firstMatch(line);
           if (match != null) {
@@ -101,7 +87,6 @@ class VoterIdDetails {
             if (extractedName != null &&
                 extractedName.isNotEmpty &&
                 extractedName.length > 2) {
-              log('  -> EXTRACTED NAME FROM PATTERN: "$extractedName"');
               potentialNameLines.add(extractedName);
               break;
             }
@@ -110,7 +95,7 @@ class VoterIdDetails {
         continue;
       }
 
-      // Skip other header/system lines (but not lines with NAME)
+      // Skip header/system lines
       if (upper.contains('ELECTION') ||
           upper.contains('COMMISSION') ||
           upper.contains('INDIA') ||
@@ -127,7 +112,6 @@ class VoterIdDetails {
           upper.contains('SEX') ||
           upper.contains('ADDRESS') ||
           upper.contains('ADD')) {
-        log('  -> SKIPPED: Contains header/system text');
         continue;
       }
 
@@ -149,7 +133,6 @@ class VoterIdDetails {
             fatherName = lines[i + 1];
           }
         }
-        log('  -> SKIPPED: Father/Husband label');
         continue;
       }
 
@@ -158,7 +141,6 @@ class VoterIdDetails {
               .hasMatch(line.replaceAll(' ', '')) ||
           datePattern.hasMatch(line) ||
           genderPattern.hasMatch(line)) {
-        log('  -> SKIPPED: EPIC/date/gender pattern');
         continue;
       }
 
@@ -166,41 +148,19 @@ class VoterIdDetails {
       if (line.length >= 3 &&
           line.length <= 50 &&
           RegExp(r'^[A-Za-z\s.]+$').hasMatch(line)) {
-        log('  -> POTENTIAL NAME: "$line"');
         potentialNameLines.add(line);
-      } else {
-        log('  -> SKIPPED: Length ${line.length} or invalid characters');
       }
-    }
-
-    log('Found ${potentialNameLines.length} potential name lines:');
-    for (int i = 0; i < potentialNameLines.length; i++) {
-      log('  Potential $i: "${potentialNameLines[i]}"');
     }
 
     // Extract name from potential lines
     for (final line in potentialNameLines) {
-      log('Evaluating potential name: "$line"');
-
-      // Skip very short or single letter lines
-      if (line.length < 2) {
-        log('  -> SKIPPED: Too short (${line.length} chars)');
-        continue;
-      }
-
+      if (line.length < 2) continue;
       // Skip if it's just initials
-      if (RegExp(r'^[A-Z]\s+[A-Z]\s*$').hasMatch(line)) {
-        log('  -> SKIPPED: Just initials');
-        continue;
-      }
-
-      // First good line is the name
+      if (RegExp(r'^[A-Z]\s+[A-Z]\s*$').hasMatch(line)) continue;
       if (name == null) {
         name = line;
-        log('  -> SELECTED AS NAME: "$line"');
       } else if (fatherName == null) {
         fatherName = line;
-        log('  -> SELECTED AS FATHER NAME: "$line"');
       }
     }
 
@@ -208,14 +168,9 @@ class VoterIdDetails {
     if (name == null && potentialNameLines.isNotEmpty) {
       potentialNameLines.sort((a, b) => b.length.compareTo(a.length));
       name = potentialNameLines.first;
-      log('FALLBACK: Selected longest line as name: "$name"');
     }
 
-    log('Final extracted name: "$name"');
-    log('Final extracted father name: "$fatherName"');
-    log('=============================');
-
-    // Extract address - lines after name/father that contain address-like content
+    // Extract address — lines after address label, stop at gender/date
     bool foundAddress = false;
     for (final line in lines) {
       final upper = line.toUpperCase();
@@ -225,16 +180,12 @@ class VoterIdDetails {
             .replaceAll(
                 RegExp(r'(ADDRESS|ADD)[:\s]*', caseSensitive: false), '')
             .trim();
-        if (addressPart.isNotEmpty) {
-          addressLines.add(addressPart);
-        }
+        if (addressPart.isNotEmpty) addressLines.add(addressPart);
         continue;
       }
-
       if (foundAddress &&
           !genderPattern.hasMatch(line) &&
           !datePattern.hasMatch(line)) {
-        // Stop collecting address if we hit gender or date
         if (upper.contains('MALE') ||
             upper.contains('FEMALE') ||
             upper.contains('DOB')) {

@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_ocr_native/flutter_ocr_native.dart';
 import 'package:image_picker/image_picker.dart';
 
@@ -316,8 +317,22 @@ class _OcrHomePageState extends State<OcrHomePage> {
                 child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text('Raw Text',
-                          style: Theme.of(context).textTheme.titleMedium),
+                      Row(
+                        children: [
+                          Expanded(child: Text('Raw OCR Text',
+                              style: Theme.of(context).textTheme.titleMedium)),
+                          IconButton(
+                            icon: const Icon(Icons.copy, size: 18),
+                            tooltip: 'Copy raw text',
+                            onPressed: () {
+                              Clipboard.setData(ClipboardData(text: _result!.text));
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                const SnackBar(content: Text('Raw OCR text copied!'), duration: Duration(seconds: 2)),
+                              );
+                            },
+                          ),
+                        ],
+                      ),
                       const Divider(),
                       SelectableText(
                           _result!.text.isEmpty

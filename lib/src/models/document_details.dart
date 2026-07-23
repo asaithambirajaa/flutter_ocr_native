@@ -170,51 +170,46 @@ class DocumentDetails {
   static DocumentDetails _fromPan(OcrResult result) {
     final text = result.text;
     final upper = text.toUpperCase();
-    var pan = DocumentNumberValidator.extractPAN(text);
+    // extractPAN now handles spaces, misreads, and relaxed 4th char internally
+    final pan = DocumentNumberValidator.extractPAN(text)
+        ?? DocumentNumberValidator.extractPAN(upper);
 
-    // Fallback: try extracting from uppercase version (handles mixed case OCR)
-    pan ??= DocumentNumberValidator.extractPAN(upper);
-
-    // Fallback: try fixing common OCR misreads (O→0, I→1, S→5)
-    if (pan == null) {
-      final corrected = upper
-          .replaceAll(RegExp(r'(?<=[A-Z]{5})[O]'), '0')
-          .replaceAll(RegExp(r'(?<=[A-Z]{5}\d*)[O]'), '0')
-          .replaceAll(RegExp(r'(?<=[A-Z]{5}\d*)[I]'), '1')
-          .replaceAll(RegExp(r'(?<=[A-Z]{5}\d*)[S]'), '5');
-      pan = DocumentNumberValidator.extractPAN(corrected);
-    }
-
-    // Parse name and DOB from PAN card text
     String? name;
     String? fatherName;
     String? dob;
 
     final lines = text.split('\n').map((l) => l.trim()).where((l) => l.isNotEmpty).toList();
+    final upperLines = lines.map((l) => l.toUpperCase()).toList();
 
     for (int i = 0; i < lines.length; i++) {
-      final line = lines[i].toUpperCase();
-      // DOB patterns
+      final line = upperLines[i];
+
+      // DOB: match DD/MM/YYYY or DD-MM-YYYY
       if (dob == null) {
         final dobMatch = RegExp(r'(\d{2}[/\-]\d{2}[/\-]\d{4})').firstMatch(lines[i]);
         if (dobMatch != null) dob = dobMatch.group(1);
       }
-      // Name: line after "Name" or the line that is a proper name (all caps, no digits)
-      if (line.contains('NAME') && i + 1 < lines.length) {
-        final candidate = lines[i + 1].trim();
-        if (RegExp(r'^[A-Za-z\s]+$').hasMatch(candidate) && candidate.length > 2) {
-          if (name == null) {
-            name = candidate;
-          } else {
-            fatherName ??= candidate;
-          }
-        }
+
+      // Name: keyword line → value is next line OR after slash on same line
+      if (line.contains('NAME') && !line.contains('FATHER') && !line.contains('ACCOUNT')) {
+        name ??= _extractNameValue(lines, i);
       }
-      // Father's name keyword
-      if ((line.contains('FATHER') || line.contains("FATHER'S")) && i + 1 < lines.length) {
-        final candidate = lines[i + 1].trim();
-        if (RegExp(r'^[A-Za-z\s]+$').hasMatch(candidate) && candidate.length > 2) {
-          fatherName = candidate;
+
+      // Father's name
+      if (line.contains('FATHER') || line.contains("FATHER'S")) {
+        fatherName ??= _extractNameValue(lines, i);
+      }
+    }
+
+    // Fallback: all-caps name lines near PAN number
+    if ((name == null || fatherName == null) && pan != null) {
+      int panIdx = lines.indexWhere((l) => l.toUpperCase().contains(pan));
+      if (panIdx == -1) panIdx = 0;
+      for (int i = panIdx + 1; i < lines.length; i++) {
+        final l = lines[i].trim();
+        if (RegExp(r'^[A-Z][A-Z\s]{3,}$').hasMatch(l)) {
+          if (name == null) { name = l; continue; }
+          if (fatherName == null) { fatherName = l; break; }
         }
       }
     }
@@ -234,6 +229,23 @@ class DocumentDetails {
       },
       rawText: result.text,
     );
+  }
+
+  /// Extracts a name value from lines given the index of the keyword line.
+  /// Checks: (1) text after '/' on same line, (2) next line if it's letters-only.
+  static String? _extractNameValue(List<String> lines, int keywordIdx) {
+    // Check after slash on same line: "/ Name" or "नाम / Name"
+    final slashIdx = lines[keywordIdx].indexOf('/');
+    if (slashIdx != -1) {
+      final afterSlash = lines[keywordIdx].substring(slashIdx + 1).trim();
+      if (RegExp(r'^[A-Za-z][A-Za-z\s]{2,}$').hasMatch(afterSlash)) return afterSlash;
+    }
+    // Check next line
+    if (keywordIdx + 1 < lines.length) {
+      final next = lines[keywordIdx + 1].trim();
+      if (RegExp(r'^[A-Za-z][A-Za-z\s]{2,}$').hasMatch(next)) return next;
+    }
+    return null;
   }
 
   static DocumentDetails _fromPassport(OcrResult result) {

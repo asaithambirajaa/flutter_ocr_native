@@ -465,10 +465,39 @@ class DocumentNumberValidator {
   /// Extracts and validates PAN number from text.
   /// Returns the valid PAN or null if not found/invalid.
   static String? extractPAN(String text) {
-    final match = RegExp(r'[A-Z]{3}[CPFHATBLGJ][A-Z]\d{4}[A-Z]')
-        .firstMatch(text.toUpperCase());
-    if (match == null) return null;
-    return isValidPAN(match.group(0)!) ? match.group(0) : null;
+    final upper = text.toUpperCase();
+
+    // Strategy 1: strict match (no spaces)
+    final strict = RegExp(r'[A-Z]{3}[CPFHATBLGJ][A-Z]\d{4}[A-Z]').firstMatch(upper);
+    if (strict != null && isValidPAN(strict.group(0)!)) return strict.group(0);
+
+    // Strategy 2: allow optional space between letter-block and digit-block
+    // e.g. "BWPPM 8548F" or "AXEPN 1010E"
+    final spaced = RegExp(r'([A-Z]{3}[CPFHATBLGJ][A-Z])\s+(\d{4})\s*([A-Z])').firstMatch(upper);
+    if (spaced != null) {
+      final pan = '${spaced.group(1)}${spaced.group(2)}${spaced.group(3)}';
+      if (isValidPAN(pan)) return pan;
+    }
+
+    // Strategy 3: OCR misread correction (O→0, I→1, S→5) in digit positions
+    final corrected = upper.replaceAllMapped(
+      RegExp(r'([A-Z]{3}[CPFHATBLGJ][A-Z])\s*([0-9OIS]{4})\s*([A-Z])'),
+      (m) {
+        final digits = m.group(2)!.replaceAll('O', '0').replaceAll('I', '1').replaceAll('S', '5');
+        return '${m.group(1)}$digits${m.group(3)}';
+      },
+    );
+    final correctedMatch = RegExp(r'[A-Z]{3}[CPFHATBLGJ][A-Z]\d{4}[A-Z]').firstMatch(corrected);
+    if (correctedMatch != null && isValidPAN(correctedMatch.group(0)!)) return correctedMatch.group(0);
+
+    // Strategy 4: relaxed — any 4th char (handles OCR misread of holder type char)
+    final relaxed = RegExp(r'([A-Z]{5})\s*(\d{4})\s*([A-Z])').firstMatch(upper);
+    if (relaxed != null) {
+      final pan = '${relaxed.group(1)}${relaxed.group(2)}${relaxed.group(3)}';
+      if (pan.length == 10) return pan;
+    }
+
+    return null;
   }
 
   // --- Verhoeff Algorithm ---

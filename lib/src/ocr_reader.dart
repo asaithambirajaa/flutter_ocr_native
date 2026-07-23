@@ -35,8 +35,8 @@ class OcrReader {
 
   /// Recognize English text from an image file path.
   /// Non-English text (Tamil, Hindi, etc.) is automatically filtered out.
-  Future<OcrResult> readFromPath(String imagePath) {
-    if (!File(imagePath).existsSync()) {
+  Future<OcrResult> readFromPath(String imagePath) async {
+    if (!await File(imagePath).exists()) {
       throw ArgumentError('File not found: $imagePath');
     }
     return _process(_platform.recognizeFromPath(imagePath));

@@ -1,4 +1,24 @@
-## 0.3.0
+## 0.3.1
+
+### Bug Fixes
+
+* **Critical PAN detection fix (Android, iOS, macOS)** — bilingual PAN cards (Hindi + English) with no-vowel PAN numbers like `BWPPM8548F` were silently dropped by the `isEnglish()` filter
+  - Root cause: vowel check `letters.count >= 4 && !hasVowel` incorrectly rejected valid PAN tokens that contain no vowels (e.g. `BWPPM`, `BWPPMF`)
+  - Fix applied to all three Vision/ML Kit platforms: **Android** (`OcrPlugin.kt`), **iOS** (`OcrPlugin.swift`), **macOS** (`OcrPlugin.swift`)
+  - Any token containing digits (IDs, codes, PAN numbers, dates) now always passes through the English filter
+  - Vowel check now only applies to pure-letter strings of 5+ characters (rejects Hindi/non-Latin words)
+  - Threshold raised from 4 → 5 letters to avoid rejecting short English abbreviations (`DEPT`, `GOVT`, `CARD`)
+  - Windows (WinRT) and Linux (Tesseract) were unaffected — their `isEnglish` only checks for `[A-Za-z0-9]` presence with no vowel filter
+  - PAN cards with vowels in the number (e.g. `AXEPN1010E`) were unaffected on all platforms
+* **PAN extraction — space-tolerant matching** — `extractPAN()` now handles OCR splitting PAN into `BWPPM 8548F` (space between letter-block and digit-block)
+  - Added Strategy 2: `([A-Z]{5})\s+(\d{4})\s*([A-Z])` pattern
+  - Added Strategy 3: OCR misread correction (O→0, I→1, S→5) with space tolerance
+  - Added Strategy 4: relaxed 4th-char fallback for OCR-misread holder type character
+* **PAN name/father parsing — bilingual layout** — `_fromPan()` now correctly extracts name and father name from bilingual cards where Hindi labels are stripped to `/ Name`, `/ Father's Name`
+  - Added `_extractNameValue()` helper — checks text after `/` on same line first, then next line
+  - Handles both old format (name on next line after label) and new bilingual format (label + value on same line separated by `/`)
+* **Raw OCR text copy button** — example app now shows a copy icon on the Raw OCR Text card for easy debugging
+
 
 * **Native PDF to image conversion** — render PDF pages to images without any third-party Dart package
   - Android: `PdfRenderer` (API 21+)

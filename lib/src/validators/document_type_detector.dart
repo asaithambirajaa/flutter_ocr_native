@@ -76,8 +76,12 @@ class DocumentTypeDetector {
     if (upper.contains('INCOME TAX')) score += 3;
     if (upper.contains('PERMANENT ACCOUNT')) score += 3;
     if (upper.contains('PAN')) score += 1;
-    if (RegExp(r'[A-Z]{3}[CPFHATBLGJ][A-Z]\d{4}[A-Z]').hasMatch(text.toUpperCase())) score += 3;
-    if (DocumentNumberValidator.extractPAN(text) != null) score += 2;
+    // Also match partial keywords that survive Hindi filtering
+    if (upper.contains('TAX DEPARTMENT')) score += 2;
+    if (upper.contains('ACCOUNT NUMBER')) score += 2;
+    if (upper.contains('GOVT. OF INDIA') || upper.contains('GOVT OF INDIA')) score += 1;
+    if (RegExp(r'[A-Z]{3}[CPFHATBLGJ][A-Z]\d{4}[A-Z]').hasMatch(text.toUpperCase())) score += 5;
+    if (DocumentNumberValidator.extractPAN(text) != null) score += 3;
     return score;
   }
 

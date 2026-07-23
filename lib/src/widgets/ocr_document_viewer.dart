@@ -38,6 +38,9 @@ class OcrDocumentViewer extends StatelessWidget {
     File? originalFile,
     Uint8List? originalBytes,
     String title = 'Document',
+    Color backgroundColor = Colors.black,
+    double minScale = 0.5,
+    double maxScale = 5.0,
     Future<void> Function(Uint8List imageBytes)? onSave,
     OcrWatermark? watermark,
   }) {
@@ -49,6 +52,9 @@ class OcrDocumentViewer extends StatelessWidget {
           originalFile: originalFile,
           originalBytes: originalBytes,
           title: title,
+          backgroundColor: backgroundColor,
+          minScale: minScale,
+          maxScale: maxScale,
           onSave: onSave,
           watermark: watermark,
         ),
@@ -82,13 +88,15 @@ class OcrDocumentViewer extends StatelessWidget {
         foregroundColor: Colors.white,
         actions: [
           if (onSave != null)
-            IconButton(
-              onPressed: () async {
-                final bytes = await _getImageBytesWithWatermark();
-                if (bytes != null) await onSave!(bytes);
-              },
-              icon: const Icon(Icons.save_alt),
-              tooltip: 'Save',
+            Builder(
+              builder: (ctx) => IconButton(
+                onPressed: () async {
+                  final bytes = await _getImageBytesWithWatermark();
+                  if (bytes != null && ctx.mounted) await onSave!(bytes);
+                },
+                icon: const Icon(Icons.save_alt),
+                tooltip: 'Save',
+              ),
             ),
         ],
       ),

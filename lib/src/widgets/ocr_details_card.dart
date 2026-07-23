@@ -1,21 +1,22 @@
 import 'package:flutter/material.dart';
 
-import '../models/aadhaar_details.dart';
+import '../models/document_details.dart';
 import '../models/ocr_result.dart';
+import '../validators/document_type_detector.dart';
 
-/// A card widget that displays parsed Aadhaar details in a structured format.
-/// Shows Name, Father/Husband, DOB, Gender, Address, and masked Aadhaar number.
+/// A card widget that displays parsed document details in a structured format.
+/// Supports all document types: Aadhaar, PAN, Passport, DL, Voter ID, Cheque.
 class OcrDetailsCard extends StatelessWidget {
   /// The OCR result to parse and display.
   final OcrResult result;
 
-  /// Optional title for the card. Defaults to "Document Details".
-  final String title;
+  /// Optional title for the card. Defaults to the detected document type label.
+  final String? title;
 
   /// Whether to show the Aadhaar number masked. Defaults to true.
   final bool maskAadhaar;
 
-  /// Whether to show all fields or only primary (Name, Address, Aadhaar).
+  /// Whether to show all fields or only primary (Name, Address, Document No.).
   final bool showAllFields;
 
   /// Whether to show the masked image thumbnail. Defaults to true.
@@ -24,7 +25,7 @@ class OcrDetailsCard extends StatelessWidget {
   const OcrDetailsCard({
     super.key,
     required this.result,
-    this.title = 'Document Details',
+    this.title,
     this.maskAadhaar = true,
     this.showAllFields = true,
     this.showMaskedImage = true,
@@ -32,9 +33,10 @@ class OcrDetailsCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // Parse from rawText to get all fields including Aadhaar number
-    final details = AadhaarDetails.fromText(result.rawText);
-    final fields = details.toDisplayMap();
+    final details = DocumentDetails.fromResultSync(result);
+    final fields = details.toDisplayMap(maskAadhaar: maskAadhaar);
+    final cardTitle =
+        title ?? DocumentTypeDetector.label(details.docType);
 
     if (fields.isEmpty) {
       return Card(
@@ -46,14 +48,10 @@ class OcrDetailsCard extends StatelessWidget {
       );
     }
 
-    // Filter to primary fields if not showing all
     final displayFields = showAllFields
         ? fields
         : Map.fromEntries(
-            fields.entries.where((e) =>
-                e.key == 'Name' ||
-                e.key == 'Address' ||
-                e.key == 'Aadhaar No.'),
+            fields.entries.take(3),
           );
 
     return Card(
@@ -66,8 +64,9 @@ class OcrDetailsCard extends StatelessWidget {
             Row(
               children: [
                 Expanded(
-                    child: Text(title,
-                        style: Theme.of(context).textTheme.titleMedium)),
+                  child: Text(cardTitle,
+                      style: Theme.of(context).textTheme.titleMedium),
+                ),
                 if (showMaskedImage && result.hasAadhaar)
                   ClipRRect(
                     borderRadius: BorderRadius.circular(4),
