@@ -1,4 +1,28 @@
-## 0.3.2
+## 0.3.3
+
+### Improvements
+
+* **Old & new document format support** — all parsers now handle both legacy and current Indian document layouts:
+  - **Aadhaar**: new bilingual format (`नाम / Name`, `पिता का नाम / Father's Name`, `जन्म की तारीख / DOB`, `पता / Address`) detected alongside old English-only labels. DOB value on next line supported
+  - **PAN**: bilingual layout already supported from 0.3.1 — no change
+  - **Driving License**: new smart card format (`COV`, `DOI`, `NT VALIDITY`, `NON-TRANSPORT` validity dates on separate lines) + improved DL number regex covering all Indian state formats including 6-digit serial and compact no-separator variants
+  - **Voter ID**: new format (`Name:`, `Father's Name:`, `Husband's Name:`, `Sex:`, `Age:`) parsed alongside old `ELECTOR'S NAME` / `FATHER'S NAME` format. `Age` field converted to approximate birth year when full DOB is absent. `M`/`F` single-char gender values normalised to `Male`/`Female`
+  - **Passport**: MRZ (Machine Readable Zone) parsing added — `P<IND<SURNAME<<GIVEN` and digit line parsed to extract surname, given name, nationality, DOB, gender, expiry and passport number directly from MRZ. MRZ date `YYMMDD` converted to `DD/MM/YYYY` with correct century. Old labeled-field booklet format unchanged
+  - **Cheque**: new CTS printed format — `A/C No.`, `Account No.`, `Acc No.`, `Account Number` label patterns parsed before falling back to raw digit scanning. Account number on next line after label also handled
+
+* **Smart handwriting detection** — per-document-type policy prevents false rejections:
+  - **Passport** and **Cheque** and **Driving License** use `allowMixed` policy — only rejected if zero printed keywords found (truly blank handwritten paper). Signatures on passports and handwritten amounts/payees on cheques no longer cause `HandwrittenTextException`
+  - **Aadhaar**, **PAN**, **Voter ID** keep strict `rejectIfHandwritten` policy — fully handwritten documents correctly rejected
+  - `docType` hint parameter added to all `OcrReader` read methods (`readFromPath`, `readFromBytes`, `readFromFile`, `readFromPdf`, `readFromPdfFile`) — pass known type to skip auto-detection and apply correct policy immediately
+
+* **Document type detector** — passport MRZ scoring added: `P<IND<` pattern scores +5, MRZ digit line pattern scores +5 — ensures MRP passports detected even without the word "PASSPORT" in OCR text
+
+* **API surface reduced** — package now exports only what app developers need:
+  - **Removed from public API**: `OcrPlatformInterface`, `OcrMethodChannel` (internal channel wiring), `AadhaarDetails`, `ChequeDetails`, `DrivingLicenseDetails`, `PassportDetails`, `VoterIdDetails` (use `DocumentDetails` instead), `OcrException` base class (catch `EmptyImageException` / `HandwrittenTextException` directly), `OcrDetailsCard`, `VoterIdDetailsCard` (build UI from `DocumentDetails.toDisplayMap()`), `HandwritingPolicy` (internal enum)
+  - All removed classes still exist in the package source and are used internally — only their re-export from the barrel is removed
+
+* **`DocumentDetails` internal refactor** — removed redundant `_parse()` indirection; `fromResultSync` now owns the dispatch switch directly. `_hasPhoto` helper inlined. `fromText` simplified to single expression
+
 
 ### Bug Fixes
 

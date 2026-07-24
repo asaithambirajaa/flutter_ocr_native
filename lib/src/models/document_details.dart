@@ -73,14 +73,15 @@ class DocumentDetails {
     Uint8List? imageBytes,
   }) async {
     final docType = type ?? DocumentTypeDetector.detect(result.text);
-    final details = _parse(result, docType);
+    final details = DocumentDetails.fromResultSync(result, docType);
 
     // Extract face for ID documents (not cheque/unknown)
-    if (imageBytes != null && _hasPhoto(docType) && OcrDocumentSaver.isFaceExtractionSupported) {
+    if (imageBytes != null &&
+        docType != DetectedDocType.cheque &&
+        docType != DetectedDocType.unknown &&
+        OcrDocumentSaver.isFaceExtractionSupported) {
       final face = await OcrDocumentSaver.extractFace(imageBytes);
-      if (face != null) {
-        return details._copyWith(photoBytes: face);
-      }
+      if (face != null) return details._copyWith(photoBytes: face);
     }
     return details;
   }
@@ -88,47 +89,24 @@ class DocumentDetails {
   /// Synchronous parsing without face extraction.
   factory DocumentDetails.fromResultSync(OcrResult result, [DetectedDocType? type]) {
     final docType = type ?? DocumentTypeDetector.detect(result.text);
-    return _parse(result, docType);
+    switch (docType) {
+      case DetectedDocType.aadhaar:      return _fromAadhaar(result);
+      case DetectedDocType.pan:          return _fromPan(result);
+      case DetectedDocType.passport:     return _fromPassport(result);
+      case DetectedDocType.drivingLicense: return _fromDL(result);
+      case DetectedDocType.voterId:      return _fromVoterId(result);
+      case DetectedDocType.cheque:       return _fromCheque(result);
+      case DetectedDocType.unknown:
+        return DocumentDetails(docType: DetectedDocType.unknown, rawText: result.text);
+    }
   }
 
   /// Parses directly from OCR text (no face extraction).
-  factory DocumentDetails.fromText(String text, [DetectedDocType? type]) {
-    final result = OcrResult(text: text, blocks: []);
-    return DocumentDetails.fromResultSync(result, type);
-  }
-
-  /// Whether this document type typically has a photo.
-  static bool _hasPhoto(DetectedDocType type) =>
-      type == DetectedDocType.aadhaar ||
-      type == DetectedDocType.pan ||
-      type == DetectedDocType.passport ||
-      type == DetectedDocType.drivingLicense ||
-      type == DetectedDocType.voterId;
+  factory DocumentDetails.fromText(String text, [DetectedDocType? type]) =>
+      DocumentDetails.fromResultSync(OcrResult(text: text, blocks: []), type);
 
   /// Whether this document type typically contains a photo.
   bool get hasPhoto => photoBytes != null;
-
-  static DocumentDetails _parse(OcrResult result, DetectedDocType docType) {
-    switch (docType) {
-      case DetectedDocType.aadhaar:
-        return _fromAadhaar(result);
-      case DetectedDocType.pan:
-        return _fromPan(result);
-      case DetectedDocType.passport:
-        return _fromPassport(result);
-      case DetectedDocType.drivingLicense:
-        return _fromDL(result);
-      case DetectedDocType.voterId:
-        return _fromVoterId(result);
-      case DetectedDocType.cheque:
-        return _fromCheque(result);
-      case DetectedDocType.unknown:
-        return DocumentDetails(
-          docType: DetectedDocType.unknown,
-          rawText: result.text,
-        );
-    }
-  }
 
   static DocumentDetails _fromAadhaar(OcrResult result) {
     // Use rawText (unmasked) for extraction

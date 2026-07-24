@@ -1,6 +1,8 @@
 import '../validators/document_number_validator.dart';
 
 /// Parsed Voter ID (EPIC) details extracted from OCR text.
+/// Supports both old format (ELECTOR'S NAME, FATHER'S NAME) and new format
+/// (Name:, Father's Name:, Husband's Name:, Age:, Sex:).
 class VoterIdDetails {
   final String? name;
   final String? fatherName;
@@ -21,6 +23,10 @@ class VoterIdDetails {
   });
 
   /// Parses OCR text from a Voter ID into structured fields.
+  /// Handles:
+  /// - Old format: ELECTOR'S NAME, FATHER'S NAME, printed on card
+  /// - New format: Name:, Father's Name:, Husband's Name:, Age:, Sex:
+  /// - Age → approximate birth year when DOB not present
   factory VoterIdDetails.fromText(String text) {
     final lines = text
         .split('\n')
@@ -38,9 +44,12 @@ class VoterIdDetails {
     // Extract EPIC number first
     epicNumber = DocumentNumberValidator.extractVoterId(text);
 
-    // Simple patterns for common fields
     final datePattern = RegExp(r'\b(\d{1,2}[/\-]\d{1,2}[/\-]\d{4})\b');
-    final genderPattern = RegExp(r'\b(Male|Female)\b', caseSensitive: false);
+    final genderPattern = RegExp(r'\b(Male|Female|MALE|FEMALE)\b', caseSensitive: false);
+    // Sex field: M / F / MALE / FEMALE
+    final sexPattern = RegExp(r'\b(M|F|MALE|FEMALE)\b', caseSensitive: false);
+    // Age field: "Age: 35" or "Age : 35" or "AGE 35"
+    final agePattern = RegExp(r'\bAGE\s*:?\s*(\d{1,3})\b', caseSensitive: false);
 
     // Find date of birth
     final dobMatch = datePattern.firstMatch(text);
@@ -48,54 +57,114 @@ class VoterIdDetails {
 
     // Find gender
     final genderMatch = genderPattern.firstMatch(text);
-    if (genderMatch != null) gender = genderMatch.group(1);
+    if (genderMatch != null) gender = _normalizeGender(genderMatch.group(1)!);
 
-    // Extract name with better filtering
-    final potentialNameLines = <String>[];
+    bool foundAddress = false;
 
     for (int i = 0; i < lines.length; i++) {
       final line = lines[i];
       final upper = line.toUpperCase();
 
-      // Check if line contains name after a label
+      // ── Name extraction ──────────────────────────────────────────────────
+
+      // Old format: "ELECTOR'S NAME : RAM KUMAR" or "ELECTOR'S NAME" then next line
       if (upper.contains('ELECTOR') && upper.contains('NAME')) {
-        final nameMatch =
-            RegExp(r"ELECTOR'?S?\s*NAME\s*:?\s*(.+)", caseSensitive: false)
-                .firstMatch(line);
-        if (nameMatch != null) {
-          final extractedName = nameMatch.group(1)?.trim();
-          if (extractedName != null &&
-              extractedName.isNotEmpty &&
-              extractedName.length > 2) {
-            potentialNameLines.add(extractedName);
+        final match = RegExp(r"ELECTOR'?S?\s*NAME\s*:?\s*(.+)", caseSensitive: false).firstMatch(line);
+        if (match != null) {
+          final val = match.group(1)?.trim();
+          if (val != null && val.length > 2) {
+            name ??= val;
             continue;
           }
         }
+        // Value on next line
+        if (i + 1 < lines.length) name ??= lines[i + 1].trim();
+        continue;
       }
 
-      // Check for other name labels
-      if (upper.contains('NAME')) {
-        final namePatterns = [
-          RegExp(r'NAME\s*:?\s*(.+)', caseSensitive: false),
-          RegExp(r'ELECTOR\s*NAME\s*:?\s*(.+)', caseSensitive: false),
-          RegExp(r'VOTER\s*NAME\s*:?\s*(.+)', caseSensitive: false),
-        ];
-        for (final pattern in namePatterns) {
-          final match = pattern.firstMatch(line);
-          if (match != null) {
-            final extractedName = match.group(1)?.trim();
-            if (extractedName != null &&
-                extractedName.isNotEmpty &&
-                extractedName.length > 2) {
-              potentialNameLines.add(extractedName);
-              break;
-            }
+      // New format: "Name : RAM KUMAR" or "Name" then next line
+      if (upper.startsWith('NAME') || upper.contains('VOTER NAME')) {
+        final val = _extractValue(line, lines, i);
+        if (val != null && val.length > 2) name ??= val;
+        continue;
+      }
+
+      // ── Father / Husband name ────────────────────────────────────────────
+
+      // Old format: "FATHER'S NAME : SHIV KUMAR"
+      // New format: "Father's Name : SHIV KUMAR" or "Husband's Name : ..."
+      if (upper.contains('FATHER') || upper.contains('HUSBAND')) {
+        final match = RegExp(
+          r"(FATHER'?S?\s*NAME|HUSBAND'?S?\s*NAME)\s*:?\s*(.*)",
+          caseSensitive: false,
+        ).firstMatch(line);
+        if (match != null) {
+          final val = match.group(2)?.trim();
+          if (val != null && val.length > 2) {
+            fatherName = val;
+          } else if (i + 1 < lines.length) {
+            fatherName = lines[i + 1].trim();
           }
         }
         continue;
       }
 
-      // Skip header/system lines
+      // Relation labels: S/O, D/O, W/O
+      if (upper.contains('S/O') || upper.contains('D/O') || upper.contains('W/O')) {
+        final val = line
+            .replaceAll(RegExp(r'(S/O|D/O|W/O)\s*:?\s*', caseSensitive: false), '')
+            .trim();
+        fatherName ??= val.isNotEmpty ? val : (i + 1 < lines.length ? lines[i + 1] : null);
+        continue;
+      }
+
+      // ── Gender / Sex ─────────────────────────────────────────────────────
+
+      // New format: "Sex : Male" or "SEX M"
+      if (upper.startsWith('SEX') || upper.startsWith('GENDER')) {
+        final match = sexPattern.firstMatch(line.substring(3));
+        if (match != null) gender ??= _normalizeGender(match.group(1)!);
+        continue;
+      }
+
+      // ── Age → approximate DOB ────────────────────────────────────────────
+      // New format cards often show Age instead of DOB
+      if (dob == null && agePattern.hasMatch(line)) {
+        final ageMatch = agePattern.firstMatch(line)!;
+        final age = int.tryParse(ageMatch.group(1)!);
+        if (age != null && age > 0 && age < 120) {
+          final birthYear = DateTime.now().year - age;
+          dob = birthYear.toString(); // year only when full DOB unavailable
+        }
+        continue;
+      }
+
+      // ── Address ──────────────────────────────────────────────────────────
+
+      if (upper.contains('ADDRESS') || upper.contains('ADD:') || upper.contains('ADDR:')) {
+        foundAddress = true;
+        final addressPart = line
+            .replaceAll(RegExp(r'(ADDRESS|ADD|ADDR)[:\s]*', caseSensitive: false), '')
+            .trim();
+        if (addressPart.isNotEmpty) addressLines.add(addressPart);
+        continue;
+      }
+
+      if (foundAddress) {
+        if (upper.contains('MALE') ||
+            upper.contains('FEMALE') ||
+            upper.contains('DOB') ||
+            upper.contains('AGE') ||
+            upper.contains('SEX') ||
+            datePattern.hasMatch(line)) {
+          foundAddress = false;
+          continue;
+        }
+        addressLines.add(line);
+        continue;
+      }
+
+      // ── Skip header/system lines ─────────────────────────────────────────
       if (upper.contains('ELECTION') ||
           upper.contains('COMMISSION') ||
           upper.contains('INDIA') ||
@@ -106,89 +175,27 @@ class VoterIdDetails {
           upper.contains('IDENTITY') ||
           upper.contains('CARD') ||
           upper.contains('ID NO') ||
-          upper.contains('NUMBER') ||
-          upper.contains('DOB') ||
-          upper.contains('AGE') ||
-          upper.contains('SEX') ||
-          upper.contains('ADDRESS') ||
-          upper.contains('ADD')) {
+          upper.contains('NUMBER')) {
         continue;
       }
 
-      // Extract father/husband name from labeled lines
-      if (upper.contains('FATHER') ||
-          upper.contains('HUSBAND') ||
-          upper.contains('S/O') ||
-          upper.contains('D/O') ||
-          upper.contains('W/O')) {
-        final fatherMatch = RegExp(
-          r"(FATHER'?S?\s*NAME|HUSBAND'?S?\s*NAME|S/O|D/O|W/O)[:\s]*(.*)",
-          caseSensitive: false,
-        ).firstMatch(line);
-        if (fatherMatch != null) {
-          final extracted = fatherMatch.group(2)?.trim();
-          if (extracted != null && extracted.isNotEmpty && extracted.length > 2) {
-            fatherName = extracted;
-          } else if (i + 1 < lines.length) {
-            fatherName = lines[i + 1];
-          }
-        }
-        continue;
-      }
-
-      // Skip EPIC numbers and dates
-      if (RegExp(r'^[A-Z]{2,3}\s*\d{6,7}\s*$')
-              .hasMatch(line.replaceAll(' ', '')) ||
+      // ── Fallback name candidates ─────────────────────────────────────────
+      // Skip EPIC numbers, dates, gender words
+      if (RegExp(r'^[A-Z]{2,3}\s*\d{6,7}\s*$').hasMatch(line.replaceAll(' ', '')) ||
           datePattern.hasMatch(line) ||
           genderPattern.hasMatch(line)) {
         continue;
       }
 
-      // Must be reasonable length and contain only letters/spaces/dots
+      // Pure letter lines of reasonable length — potential name/father
       if (line.length >= 3 &&
           line.length <= 50 &&
           RegExp(r'^[A-Za-z\s.]+$').hasMatch(line)) {
-        potentialNameLines.add(line);
-      }
-    }
-
-    // Extract name from potential lines
-    for (final line in potentialNameLines) {
-      if (line.length < 2) continue;
-      // Skip if it's just initials
-      if (RegExp(r'^[A-Z]\s+[A-Z]\s*$').hasMatch(line)) continue;
-      name ??= line;
-      if (name != line) fatherName ??= line;
-    }
-
-    // Fallback: if no name found, take the longest potential line
-    if (name == null && potentialNameLines.isNotEmpty) {
-      potentialNameLines.sort((a, b) => b.length.compareTo(a.length));
-      name = potentialNameLines.first;
-    }
-
-    // Extract address — lines after address label, stop at gender/date
-    bool foundAddress = false;
-    for (final line in lines) {
-      final upper = line.toUpperCase();
-      if (upper.contains('ADDRESS') || upper.contains('ADD:')) {
-        foundAddress = true;
-        final addressPart = line
-            .replaceAll(
-                RegExp(r'(ADDRESS|ADD)[:\s]*', caseSensitive: false), '')
-            .trim();
-        if (addressPart.isNotEmpty) addressLines.add(addressPart);
-        continue;
-      }
-      if (foundAddress &&
-          !genderPattern.hasMatch(line) &&
-          !datePattern.hasMatch(line)) {
-        if (upper.contains('MALE') ||
-            upper.contains('FEMALE') ||
-            upper.contains('DOB')) {
-          break;
+        if (name == null) {
+          name = line;
+        } else {
+          fatherName ??= line;
         }
-        addressLines.add(line);
       }
     }
 
@@ -201,6 +208,23 @@ class VoterIdDetails {
       address: addressLines.isNotEmpty ? addressLines.join(', ') : null,
       rawText: text,
     );
+  }
+
+  static String? _extractValue(String line, List<String> lines, int i) {
+    final colonIdx = line.indexOf(':');
+    if (colonIdx != -1) {
+      final val = line.substring(colonIdx + 1).trim();
+      if (val.isNotEmpty) return val;
+    }
+    if (i + 1 < lines.length) return lines[i + 1].trim();
+    return null;
+  }
+
+  static String _normalizeGender(String raw) {
+    final upper = raw.toUpperCase();
+    if (upper == 'M' || upper == 'MALE') return 'Male';
+    if (upper == 'F' || upper == 'FEMALE') return 'Female';
+    return raw;
   }
 
   /// Validates EPIC number format (3 letters + 6-7 digits).

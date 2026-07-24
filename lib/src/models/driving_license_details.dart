@@ -1,4 +1,6 @@
 /// Parsed driving license details extracted from OCR text.
+/// Supports both old format (plain English labels) and new smart card format
+/// (COV, DOI, VALIDITY, NON-TRANSPORT/TRANSPORT validity dates).
 class DrivingLicenseDetails {
   final String? name;
   final String? fatherName;
@@ -27,6 +29,10 @@ class DrivingLicenseDetails {
   });
 
   /// Parses OCR text from a driving license into structured fields.
+  /// Handles:
+  /// - Old format: plain labels (Name, S/O, DOB, Address, Valid Till)
+  /// - New smart card format: COV, DOI, VALIDITY, NON-TRANSPORT/TRANSPORT dates
+  /// - DL numbers with hyphens, spaces, or no separators
   factory DrivingLicenseDetails.fromText(String text) {
     final lines = text
         .split('\n')
@@ -46,12 +52,20 @@ class DrivingLicenseDetails {
     final addressLines = <String>[];
 
     final datePattern = RegExp(r'(\d{2}[/\-]\d{2}[/\-]\d{4})');
-    // DL number: state code (2 letters) + RTO code (2 digits) + year (4 digits) + serial (7 digits)
-    // e.g., DL-0420110149646, TN01 20190012345, KA0120200001234
-    final dlPattern = RegExp(r'\b([A-Z]{2}[\-\s]?\d{2}[\-\s]?\d{4}[\-\s]?\d{7})\b');
-    final dlPatternAlt = RegExp(r'\b([A-Z]{2}\d{13})\b');
+
+    // DL number patterns — covers all Indian formats:
+    // DL-0420110149646, TN01 20190012345, KA01-2020-0001234, MH12 20150012345
+    final dlPatterns = [
+      RegExp(r'\b([A-Z]{2})[\-\s]?(\d{2})[\-\s]?(\d{4})[\-\s]?(\d{7})\b'),
+      RegExp(r'\b([A-Z]{2})[\-\s]?(\d{2})[\-\s]?(\d{4})[\-\s]?(\d{6})\b'), // some states 6-digit serial
+      RegExp(r'\b([A-Z]{2})(\d{13,14})\b'), // compact no-separator
+    ];
+
     final bloodGroupPattern = RegExp(r'\b(A|B|AB|O)[+\-](ve)?\b', caseSensitive: false);
-    final vehicleClassPattern = RegExp(r'\b(LMV|MCWG|HMV|HPMV|HTV|MGV|LMV-NT|MC EX50CC|MC50CC|TRANS)\b', caseSensitive: false);
+    final vehicleClassPattern = RegExp(
+      r'\b(LMV[\-\s]?NT|LMV|MCWG|MC\s*EX50CC|MC50CC|HMV|HPMV|HTV|MGV|TRANS|FVG|INVCRG|ADAPTED)\b',
+      caseSensitive: false,
+    );
 
     bool inAddress = false;
 
@@ -59,53 +73,105 @@ class DrivingLicenseDetails {
       final line = lines[i];
       final upper = line.toUpperCase();
 
-      // DL Number
+      // DL Number — try all patterns
       if (dlNumber == null) {
-        final match = dlPattern.firstMatch(line) ?? dlPatternAlt.firstMatch(line);
-        if (match != null) {
-          dlNumber = match.group(0)?.replaceAll(' ', '');
-          continue;
+        bool found = false;
+        for (final pattern in dlPatterns) {
+          final match = pattern.firstMatch(upper);
+          if (match != null) {
+            dlNumber = match.group(0)!.replaceAll(RegExp(r'[\s\-]'), '');
+            found = true;
+            break;
+          }
         }
-        if (upper.contains('DL NO') || upper.contains('LICENCE NO') || upper.contains('LICENSE NO')) {
+        if (found) continue;
+        // Label-based extraction (old format: "DL No: ...")
+        if (upper.contains('DL NO') ||
+            upper.contains('LICENCE NO') ||
+            upper.contains('LICENSE NO') ||
+            upper.contains('LIC NO') ||
+            upper.contains('DL NUMBER')) {
           final val = _extractValue(line, lines, i);
-          if (val != null) dlNumber = val.replaceAll(' ', '');
+          if (val != null) {
+            dlNumber = val.replaceAll(RegExp(r'[\s\-]'), '');
+          }
           continue;
         }
       }
 
       // Name
-      if (upper.contains('NAME') && !upper.contains('FATHER') && !upper.contains('S/O') && !upper.contains('D/O') && name == null) {
+      if (upper.contains('NAME') &&
+          !upper.contains('FATHER') &&
+          !upper.contains('S/O') &&
+          !upper.contains('D/O') &&
+          !upper.contains('W/O') &&
+          name == null) {
         name = _extractValue(line, lines, i);
         continue;
       }
 
       // Father/Husband name
-      if (upper.contains('S/O') || upper.contains('D/O') || upper.contains('W/O') || upper.contains('FATHER')) {
+      if (upper.contains('S/O') ||
+          upper.contains('D/O') ||
+          upper.contains('W/O') ||
+          upper.contains('FATHER') ||
+          upper.contains('HUSBAND')) {
         fatherName = line
-            .replaceAll(RegExp(r'(S/O|D/O|W/O|Father|FATHER)[:\s]*', caseSensitive: false), '')
+            .replaceAll(
+                RegExp(r'(S/O|D/O|W/O|Father|FATHER|Husband|HUSBAND)[:\s]*',
+                    caseSensitive: false),
+                '')
             .trim();
         if (fatherName.isEmpty && i + 1 < lines.length) fatherName = lines[i + 1];
         continue;
       }
 
-      // DOB
-      if (upper.contains('DOB') || upper.contains('BIRTH')) {
+      // DOB — old: "DOB:", new smart card: "DOB" on same line with date
+      if (upper.contains('DOB') || upper.contains('DATE OF BIRTH') || upper.contains('BIRTH DATE')) {
         final match = datePattern.firstMatch(line);
-        if (match != null) dob = match.group(1);
+        if (match != null) {
+          dob = match.group(1);
+        } else if (i + 1 < lines.length) {
+          final nextMatch = datePattern.firstMatch(lines[i + 1]);
+          if (nextMatch != null) dob = nextMatch.group(1);
+        }
         continue;
       }
 
-      // Date of Issue
-      if (upper.contains('ISSUE') || upper.contains('DOI')) {
+      // Date of Issue — old: "Date of Issue", new: "DOI"
+      if ((upper.contains('ISSUE') || upper.contains('DOI')) &&
+          !upper.contains('PLACE')) {
         final match = datePattern.firstMatch(line);
-        if (match != null) dateOfIssue = match.group(1);
+        if (match != null) {
+          dateOfIssue = match.group(1);
+        } else if (i + 1 < lines.length) {
+          final nextMatch = datePattern.firstMatch(lines[i + 1]);
+          if (nextMatch != null) dateOfIssue = nextMatch.group(1);
+        }
         continue;
       }
 
-      // Validity / Expiry
-      if (upper.contains('VALID') || upper.contains('EXPIRY') || upper.contains('NON-TRANSPORT') || upper.contains('TRANSPORT')) {
+      // Validity — old: "Valid Till", new smart card: "VALIDITY", "NON-TRANSPORT", "TRANSPORT"
+      if (upper.contains('VALID') ||
+          upper.contains('EXPIRY') ||
+          upper.contains('NON-TRANSPORT') ||
+          upper.contains('NON TRANSPORT') ||
+          upper.contains('NT VALIDITY') ||
+          upper.contains('TRANSPORT VALIDITY')) {
         final match = datePattern.firstMatch(line);
-        if (match != null) validity = match.group(1);
+        if (match != null) {
+          validity ??= match.group(1);
+        } else if (i + 1 < lines.length) {
+          final nextMatch = datePattern.firstMatch(lines[i + 1]);
+          if (nextMatch != null) validity ??= nextMatch.group(1);
+        }
+        continue;
+      }
+
+      // COV / Vehicle Class — new smart card uses "COV" label
+      if (upper.contains('COV') || upper.contains('CLASS OF VEHICLE') || upper.contains('VEHICLE CLASS')) {
+        final val = _extractValue(line, lines, i);
+        if (val != null && vehicleClass == null) vehicleClass = val.toUpperCase();
         continue;
       }
 
@@ -116,7 +182,7 @@ class DrivingLicenseDetails {
         continue;
       }
 
-      // Vehicle Class
+      // Vehicle Class inline (e.g., "LMV, MCWG" on a line)
       final vcMatch = vehicleClassPattern.firstMatch(line);
       if (vcMatch != null && vehicleClass == null) {
         vehicleClass = vcMatch.group(0)?.toUpperCase();
@@ -124,15 +190,23 @@ class DrivingLicenseDetails {
       }
 
       // Address
-      if (upper.contains('ADDRESS') || upper.contains('ADD')) {
+      if (upper.contains('ADDRESS') || upper.contains('ADD:') || upper.contains('ADDR')) {
         inAddress = true;
-        final val = line.replaceAll(RegExp(r'(Address|ADD)[:\s]*', caseSensitive: false), '').trim();
+        final val = line
+            .replaceAll(RegExp(r'(Address|ADD|ADDR)[:\s]*', caseSensitive: false), '')
+            .trim();
         if (val.isNotEmpty) addressLines.add(val);
         continue;
       }
 
       if (inAddress) {
-        if (dlPattern.hasMatch(line) || upper.contains('VALID') || upper.contains('CLASS')) {
+        // Stop address collection at known field markers
+        if (dlPatterns.any((p) => p.hasMatch(upper)) ||
+            upper.contains('VALID') ||
+            upper.contains('CLASS') ||
+            upper.contains('COV') ||
+            upper.contains('DOI') ||
+            upper.contains('BLOOD')) {
           inAddress = false;
         } else {
           addressLines.add(line);
@@ -163,7 +237,6 @@ class DrivingLicenseDetails {
   }
 
   static String? _extractValue(String line, List<String> lines, int i) {
-    // Split on colon only (not hyphen, which breaks dates)
     final colonIdx = line.indexOf(':');
     if (colonIdx != -1) {
       final val = line.substring(colonIdx + 1).trim();
@@ -175,7 +248,8 @@ class DrivingLicenseDetails {
 
   /// Validates DL number format.
   bool get isDlNumberValid =>
-      dlNumber != null && RegExp(r'^[A-Z]{2}\d{13}$').hasMatch(dlNumber!.replaceAll(RegExp(r'[\s\-]'), ''));
+      dlNumber != null &&
+      RegExp(r'^[A-Z]{2}\d{13,14}$').hasMatch(dlNumber!.replaceAll(RegExp(r'[\s\-]'), ''));
 
   /// Returns a map of non-null fields for display.
   Map<String, String> toDisplayMap() {

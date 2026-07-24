@@ -18,14 +18,15 @@ A Flutter plugin for extracting text from images **and PDFs** using native on-de
 - **Image cropper** with rotate support — crop & rotate before OCR
 - **Capture instructions widget** — show best practices before scan/upload
 - **Document type auto-detection** — Aadhaar, PAN, Passport, Driving License, Voter ID, Cheque
-- **Document details parsing** — structured fields from OCR text (name, DOB, address, etc.)
+- **Old & new document format support** — all parsers handle both legacy and current Indian document layouts
+- **MRZ passport parsing** — extracts all fields directly from Machine Readable Zone lines
 - **Unified `DocumentDetails` model** — single API for all document types
 - Aadhaar number masking (text + image) — configurable
 - Aadhaar & PAN number validation (Verhoeff checksum, format check)
-- **Bilingual PAN card support** — correctly extracts PAN numbers and fields from Hindi+English cards (e.g. `नाम / Name` layout) on Android, iOS, and macOS
+- **Bilingual document support** — Hindi + English labels (`नाम / Name`, `पिता का नाम / Father's Name`) on Aadhaar and PAN
 - Passport, Driving License, Voter ID, IFSC, Account number validation
 - **Face extraction** from document images (Android, iOS, macOS)
-- Handwriting detection — rejects non-printed documents
+- **Smart handwriting detection** — per-document-type policy; passport signatures and cheque handwriting no longer cause false rejections
 - Document viewer with pinch-to-zoom
 - Download with configurable watermark (Lead ID, Lat, Long, etc.)
 - Watermark auto-scales to image resolution — always readable
@@ -38,7 +39,7 @@ A Flutter plugin for extracting text from images **and PDFs** using native on-de
 
 ```yaml
 dependencies:
-  flutter_ocr_native: ^0.3.2
+  flutter_ocr_native: ^0.3.3
 ```
 
 ### Android
@@ -135,17 +136,13 @@ Automatically detects and corrects image rotation — works even without EXIF da
 Uses OCR confidence scoring across all 4 rotations to find the readable orientation.
 
 ```dart
-// Correct orientation before processing
 final corrected = await OcrDocumentSaver.correctOrientation(imageBytes);
-
-// Image is now upright — use for cropping, viewing, or OCR
 final result = await reader.readFromBytes(corrected);
 ```
 
 ### Image Cropper with Rotate
 
 ```dart
-// Show crop UI — includes rotate button (90° clockwise)
 final cropped = await OcrImageCropper.show(
   context,
   imageBytes: correctedBytes,
@@ -165,7 +162,6 @@ Guide users on best angle, lighting, and document clarity before capture.
 // Bottom sheet (recommended for mobile)
 final proceed = await OcrCaptureInstructions.showAsBottomSheet(context);
 if (proceed != true) return;
-// Now open camera/gallery...
 
 // Dialog
 await OcrCaptureInstructions.showAsDialog(context);
@@ -185,7 +181,7 @@ OcrCaptureInstructions.showAsBottomSheet(
 );
 
 // Inline widget
-OcrCaptureInstructions() // embed directly in your UI
+OcrCaptureInstructions()
 ```
 
 ### Validation & Aadhaar Masking
@@ -213,20 +209,54 @@ try {
 }
 ```
 
+### Smart Handwriting Detection
+
+Documents that always contain handwritten fields (passport signature, cheque amount/payee,
+old-format driving license entries) are handled with a mixed-mode policy — only rejected
+if the document contains **zero** printed keywords at all.
+
+```dart
+final reader = OcrReader(validateDocument: true);
+
+// Hint the document type to apply the correct policy immediately
+// Passport: signature won't cause HandwrittenTextException
+final result = await reader.readFromBytes(
+  passportBytes,
+  docType: DetectedDocType.passport,
+);
+
+// Cheque: handwritten amount/payee won't cause HandwrittenTextException
+final result = await reader.readFromBytes(
+  chequeBytes,
+  docType: DetectedDocType.cheque,
+);
+
+// Aadhaar/PAN/Voter ID: strict — fully handwritten document is rejected
+final result = await reader.readFromBytes(
+  aadhaarBytes,
+  docType: DetectedDocType.aadhaar,
+);
+```
+
+| Document | Policy | Behaviour |
+|---|---|---|
+| Aadhaar, PAN, Voter ID | Strict | Rejected if native says not printed |
+| Passport, Cheque, DL | Mixed | Only rejected if zero printed keywords found |
+
 ### Document Type Auto-Detection
 
 ```dart
 final result = await reader.readFromBytes(imageBytes);
 
-// Auto-detect document type
 log(result.docType);      // DetectedDocType.aadhaar
-log(result.docTypeLabel); // "Aadhaar"
+log(result.docTypeLabel); // "Aadhaar Card"
 ```
 
 ### Unified Document Details
 
+Single API for all document types — handles old format, new bilingual format, and MRZ passports.
+
 ```dart
-// Single API for all document types — parses fields + extracts face
 final details = await DocumentDetails.fromResult(
   result,
   imageBytes: processedBytes,
@@ -234,17 +264,25 @@ final details = await DocumentDetails.fromResult(
 
 log(details.docType);         // DetectedDocType.aadhaar
 log(details.documentNumber);  // "5399 8956 2356"
+log(details.name);            // "Ram Deva"
+log(details.dob);             // "01/08/1994"
 log(details.isValid);         // true
 log(details.validationError); // null
 
 // Structured display map — auto-masks Aadhaar
 final fields = details.toDisplayMap(maskAadhaar: true);
-// {'Name': 'Ram Deva', 'DOB': '01/08/1994', 'Aadhaar No.': 'XXXX XXXX 2356', ...}
+// {'Document No.': 'XXXX XXXX 2356', 'Name': 'Ram Deva', 'DOB': '01/08/1994', ...}
 
-// Face photo
+// Face photo (Aadhaar, PAN, Passport, DL, Voter ID)
 if (details.hasPhoto) {
   Image.memory(details.photoBytes!);
 }
+
+// Synchronous (no face extraction)
+final details = DocumentDetails.fromResultSync(result);
+
+// From raw text
+final details = DocumentDetails.fromText(ocrText, DetectedDocType.passport);
 ```
 
 ### Document Number Validation
@@ -256,7 +294,6 @@ DocumentNumberValidator.validateAadhaar('0000 0000 0000'); // "Aadhaar cannot st
 DocumentNumberValidator.isValidPAN('ABCPD1234F'); // true/false
 DocumentNumberValidator.validatePAN('ABCXD1234F'); // "PAN 4th character is invalid holder type"
 
-// Also supports:
 DocumentNumberValidator.isValidPassport('A1234567');
 DocumentNumberValidator.isValidDrivingLicense('KA0120190001234');
 DocumentNumberValidator.isValidVoterId('IBW0643130');
@@ -264,45 +301,9 @@ DocumentNumberValidator.isValidIFSC('SBIN0001234');
 DocumentNumberValidator.isValidAccountNumber('12345678901');
 ```
 
-### Document Details Parsing
-
-Works with both **old format** (English-only labels) and **new bilingual format** (Hindi + English labels like `नाम / Name`).
-
-```dart
-// Aadhaar
-final aadhaar = AadhaarDetails.fromText(result.text);
-log(aadhaar.name);          // "Ram Deva"
-log(aadhaar.fatherName);    // "Shiv Kumar"
-log(aadhaar.dob);           // "01/08/1994"
-log(aadhaar.gender);        // "Male"
-log(aadhaar.aadhaarNumber); // "5399 8956 2356"
-
-// Passport
-final passport = PassportDetails.fromText(result.text);
-log(passport.name);
-log(passport.passportNumber);
-log(passport.dateOfExpiry);
-
-// Driving License
-final dl = DrivingLicenseDetails.fromText(result.text);
-log(dl.licenseNumber);
-log(dl.validTill);
-
-// Voter ID
-final voter = VoterIdDetails.fromText(result.text);
-log(voter.name);
-log(voter.epicNumber);
-
-// Cheque
-final cheque = ChequeDetails.fromText(result.text);
-log(cheque.ifscCode);
-log(cheque.accountNumber);
-```
-
 ### Face Extraction
 
 ```dart
-// Extract face from document image
 final faceBytes = await OcrDocumentSaver.extractFace(imageBytes);
 if (faceBytes != null) {
   Image.memory(faceBytes);
@@ -346,13 +347,11 @@ final watermark = OcrWatermark(
   },
 );
 
-// Download processed bytes with watermark
 final file = await OcrDocumentSaver.downloadBytes(
   imageBytes: processedBytes,
   watermark: watermark,
 );
 
-// Or from file path (uses original file)
 final file = await OcrDocumentSaver.downloadFromPath(
   result: result,
   originalImagePath: imagePath,
@@ -375,11 +374,8 @@ final file = await OcrDocumentSaver.downloadBytes(
   format: OcrImageFormat.png,
 );
 
-// Standalone compress any image
-final compressed = await OcrDocumentSaver.compressImage(
-  anyImageBytes,
-  quality: 60,
-);
+// Standalone compress
+final compressed = await OcrDocumentSaver.compressImage(anyImageBytes, quality: 60);
 ```
 
 ### Custom Validator
@@ -420,9 +416,12 @@ Future<void> processDocument(File file) async {
   final cropped = await OcrImageCropper.show(context, imageBytes: corrected);
   if (cropped == null) return;
 
-  // 4. OCR
+  // 4. OCR — hint doc type for correct handwriting policy
   final reader = OcrReader(validateDocument: true, maskAadhaar: true);
-  final result = await reader.readFromBytes(cropped);
+  final result = await reader.readFromBytes(
+    cropped,
+    docType: DetectedDocType.aadhaar, // optional — auto-detected if omitted
+  );
 
   // 5. Get unified details (parses fields + extracts face)
   final details = await DocumentDetails.fromResult(result, imageBytes: cropped);
@@ -438,6 +437,51 @@ Future<void> processDocument(File file) async {
 }
 ```
 
+## Public API
+
+```
+OcrReader                      readFromPath / readFromBytes / readFromFile
+                               readFromPdf / readFromPdfFile
+                               validateDocument, maskAadhaar, validator
+
+OcrResult                      text, blocks, isPrinted, hasAadhaar,
+TextBlock / TextLine           maskedImageBytes, docType, docTypeLabel
+TextElement
+
+DocumentDetails                fromResult() / fromResultSync() / fromText()
+                               docType, documentNumber, name, fatherName,
+                               dob, gender, address, isValid, validationError,
+                               photoBytes, extraFields, toDisplayMap()
+
+OcrDocumentSaver               renderPdfPage / getPdfPageCount / renderAllPdfPages
+                               correctOrientation / extractFace
+                               download / downloadBytes / downloadFromPath
+                               save / saveFromPath / burnWatermark / compressImage
+
+DocumentNumberValidator        isValidAadhaar / validateAadhaar
+                               isValidPAN / validatePAN / panHolderType
+                               isValidPassport / isValidDrivingLicense
+                               isValidVoterId / isValidIFSC / isValidAccountNumber
+                               extractAadhaar / extractPAN / extractPassport
+                               extractDrivingLicense / extractVoterId / extractIFSC
+
+DocumentTypeDetector           detect() / label() / icon()
+DetectedDocType                aadhaar / pan / passport / drivingLicense
+                               voterId / cheque / unknown
+
+OcrValidator                   validate(result, docType)
+OcrWatermark                   lines, textColor, backgroundColor, fontSize
+OcrImageFormat                 jpeg / png
+
+EmptyImageException            thrown when no text detected
+HandwrittenTextException       thrown when document is fully handwritten
+
+OcrCaptureInstructions         showAsBottomSheet() / showAsDialog() / inline widget
+OcrInstruction                 icon, title, description, color
+OcrImageCropper                show() — full-screen crop + rotate
+OcrDocumentViewer              show() — full-screen viewer with zoom + save
+```
+
 ## Architecture
 
 ```
@@ -445,44 +489,45 @@ lib/
 ├── flutter_ocr_native.dart               # Public barrel export
 └── src/
     ├── models/
-    │   ├── aadhaar_details.dart            # AadhaarDetails parser
-    │   ├── cheque_details.dart             # ChequeDetails parser
-    │   ├── document_details.dart           # Unified DocumentDetails model
-    │   ├── driving_license_details.dart    # DrivingLicenseDetails parser
-    │   ├── ocr_exception.dart             # EmptyImageException, HandwrittenTextException
-    │   ├── ocr_result.dart                # OcrResult, TextBlock, TextLine, TextElement
-    │   ├── ocr_watermark.dart             # OcrWatermark config
-    │   ├── passport_details.dart           # PassportDetails parser
-    │   └── voter_id_details.dart           # VoterIdDetails parser
+    │   ├── aadhaar_details.dart            # internal — AadhaarDetails parser
+    │   ├── cheque_details.dart             # internal — ChequeDetails parser
+    │   ├── document_details.dart           # DocumentDetails (public unified model)
+    │   ├── driving_license_details.dart    # internal — DrivingLicenseDetails parser
+    │   ├── ocr_exception.dart              # EmptyImageException, HandwrittenTextException
+    │   ├── ocr_result.dart                 # OcrResult, TextBlock, TextLine, TextElement
+    │   ├── ocr_watermark.dart              # OcrWatermark config
+    │   ├── passport_details.dart           # internal — PassportDetails parser (+ MRZ)
+    │   └── voter_id_details.dart           # internal — VoterIdDetails parser
     ├── utils/
-    │   └── ocr_document_saver.dart        # Download, save, watermark, compress, face, orientation, PDF
+    │   └── ocr_document_saver.dart         # Download, save, watermark, compress, face, orientation, PDF
     ├── validators/
     │   ├── document_number_validator.dart  # Aadhaar, PAN, Passport, DL, Voter ID, IFSC validation
-    │   ├── document_type_detector.dart    # Auto-detect document type from OCR text
-    │   └── ocr_validator.dart             # Document validation (printed check, min length)
+    │   ├── document_type_detector.dart     # Auto-detect document type from OCR text
+    │   └── ocr_validator.dart              # Document validation (printed check, min length)
     ├── widgets/
     │   ├── ocr_capture_instructions.dart   # Pre-scan tips widget
-    │   ├── ocr_details_card.dart          # Structured details card widget
-    │   ├── ocr_document_viewer.dart       # Full-screen viewer with zoom
-    │   └── ocr_image_cropper.dart         # Crop + rotate widget
-    ├── ocr_platform_interface.dart         # Abstract platform contract
-    ├── ocr_method_channel.dart             # MethodChannel implementation
-    └── ocr_reader.dart                    # Public API class
+    │   ├── ocr_details_card.dart           # internal — details card widget
+    │   ├── ocr_document_viewer.dart        # Full-screen viewer with zoom
+    │   ├── ocr_image_cropper.dart          # Crop + rotate widget
+    │   └── voter_id_details_card.dart      # internal — Voter ID card widget
+    ├── ocr_platform_interface.dart         # internal — abstract platform contract
+    ├── ocr_method_channel.dart             # internal — MethodChannel implementation
+    └── ocr_reader.dart                     # OcrReader public API
 
 android/src/main/kotlin/com/flutter_ocr_native/
-    └── OcrPlugin.kt                       # ML Kit OCR + face + orientation + crop + rotate + PDF
+    └── OcrPlugin.kt                        # ML Kit OCR + face + orientation + crop + rotate + PDF
 
 ios/Classes/
-    └── OcrPlugin.swift                    # Vision OCR + face + orientation + crop + rotate + PDF
+    └── OcrPlugin.swift                     # Vision OCR + face + orientation + crop + rotate + PDF
 
 macos/Classes/
-    └── OcrPlugin.swift                    # Vision OCR + face + orientation + crop + rotate + PDF
+    └── OcrPlugin.swift                     # Vision OCR + face + orientation + crop + rotate + PDF
 
 windows/
-    └── ocr_plugin.cpp                     # WinRT OCR + GDI+ + PDF
+    └── ocr_plugin.cpp                      # WinRT OCR + GDI+ + PDF
 
 linux/
-    └── ocr_plugin.cc                      # Tesseract OCR + Leptonica
+    └── ocr_plugin.cc                       # Tesseract OCR + Leptonica
 ```
 
 ## Supported Platforms

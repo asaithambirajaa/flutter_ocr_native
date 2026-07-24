@@ -1,4 +1,6 @@
 /// Parsed cheque details extracted from OCR text.
+/// Supports both old handwritten-style cheques and new CTS printed cheques
+/// (A/C No. label, MICR band, printed IFSC).
 class ChequeDetails {
   final String? payeeName;
   final String? amountInWords;
@@ -27,6 +29,9 @@ class ChequeDetails {
   });
 
   /// Parses OCR text from a cheque into structured fields.
+  /// Handles:
+  /// - Old format: handwritten Pay/Payee, Rupees label, 6-digit cheque number
+  /// - New CTS format: printed A/C No., IFSC label, MICR band, Account No. label
   factory ChequeDetails.fromText(String text) {
     final lines = text
         .split('\n')
@@ -45,18 +50,20 @@ class ChequeDetails {
     String? branchName;
     String? address;
 
-    // Case-insensitive IFSC: 4 letters + 0 + 6 alphanumeric
     final ifscPattern = RegExp(r'\b([A-Za-z]{4}0[A-Za-z0-9]{6})\b');
-    // Account number: 9-18 digits (may have spaces)
     final accountPattern = RegExp(r'\b(\d[\d\s]{8,20}\d)\b');
     final accountCleanPattern = RegExp(r'\b(\d{9,18})\b');
+    // A/C No., Account No., Acc No., Account Number, A/C Number
+    final accountLabelPattern = RegExp(
+      r'(A\s*/\s*C|ACC(OUNT)?|ACCOUNT)\s*(NO\.?|NUMBER|#)?\s*[:\.]?\s*',
+      caseSensitive: false,
+    );
     final datePattern = RegExp(r'(\d{2}[/\-]\d{2}[/\-]\d{2,4})');
     final amountFigurePattern = RegExp(r'[₹Rs.]*\s*(\d[\d,]*\.?\d*)');
     final chequeNumPattern = RegExp(r'\b(\d{6})\b');
     final payLabelPattern = RegExp(r'(Pay\s*(to)?|Payee)[:\s]*', caseSensitive: false);
     final amountLabelPattern = RegExp(r'(Rupees|Amount|Rs\.?)[:\s]*', caseSensitive: false);
 
-    // Extended bank name patterns
     final bankPatterns = [
       RegExp(r'State\s*Bank\s*(of\s*India)?', caseSensitive: false),
       RegExp(r'\bSBI\b', caseSensitive: false),
@@ -109,7 +116,7 @@ class ChequeDetails {
       final line = lines[i];
       final upper = line.toUpperCase();
 
-      // IFSC code (case-insensitive)
+      // IFSC code
       if (ifscCode == null) {
         final ifscMatch = ifscPattern.firstMatch(line);
         if (ifscMatch != null) {
@@ -117,12 +124,45 @@ class ChequeDetails {
           consumed.add(i);
           continue;
         }
-        // Also check for "IFSC" label followed by code
         if (upper.contains('IFSC')) {
           final codeMatch = RegExp(r'[A-Za-z]{4}0[A-Za-z0-9]{6}').firstMatch(line);
           if (codeMatch != null) {
             ifscCode = codeMatch.group(0)!.toUpperCase();
             consumed.add(i);
+            continue;
+          }
+          // IFSC label but code on next line
+          if (i + 1 < lines.length) {
+            final nextMatch = ifscPattern.firstMatch(lines[i + 1]);
+            if (nextMatch != null) {
+              ifscCode = nextMatch.group(1)!.toUpperCase();
+              consumed.add(i);
+              consumed.add(i + 1);
+              continue;
+            }
+          }
+        }
+      }
+
+      // Account number — labeled (new CTS format: "A/C No.", "Account No.", etc.)
+      if (accountNumber == null && accountLabelPattern.hasMatch(line)) {
+        final afterLabel = line.replaceAll(accountLabelPattern, '').trim();
+        final accMatch = RegExp(r'(\d[\d\s]{7,19}\d)').firstMatch(afterLabel);
+        if (accMatch != null) {
+          final cleaned = accMatch.group(1)!.replaceAll(RegExp(r'\s'), '');
+          if (cleaned.length >= 9 && cleaned.length <= 18) {
+            accountNumber = cleaned;
+            consumed.add(i);
+            continue;
+          }
+        }
+        // Value on next line
+        if (i + 1 < lines.length) {
+          final nextMatch = RegExp(r'(\d{9,18})').firstMatch(lines[i + 1]);
+          if (nextMatch != null) {
+            accountNumber = nextMatch.group(1);
+            consumed.add(i);
+            consumed.add(i + 1);
             continue;
           }
         }
@@ -179,21 +219,18 @@ class ChequeDetails {
       }
     }
 
-    // Second pass: account number, cheque number, amount, address
+    // Second pass: account number (unlabeled), cheque number, amount, address
     for (int i = 0; i < lines.length; i++) {
       if (consumed.contains(i)) continue;
       final line = lines[i];
 
-      // Account number — try spaced format first, then clean digits
+      // Account number — spaced format then clean digits
       if (accountNumber == null) {
         final spacedMatch = accountPattern.firstMatch(line);
         if (spacedMatch != null) {
           final cleaned = spacedMatch.group(1)!.replaceAll(RegExp(r'\s'), '');
           if (cleaned.length >= 9 && cleaned.length <= 18) {
-            // Skip phone numbers (10 digits starting with 6-9)
-            if (cleaned.length == 10 && RegExp(r'^[6-9]').hasMatch(cleaned)) {
-              // skip
-            } else {
+            if (!(cleaned.length == 10 && RegExp(r'^[6-9]').hasMatch(cleaned))) {
               accountNumber = cleaned;
               consumed.add(i);
               continue;
@@ -204,9 +241,7 @@ class ChequeDetails {
         if (cleanMatch != null) {
           final num = cleanMatch.group(1)!;
           if (num.length >= 9) {
-            if (num.length == 10 && RegExp(r'^[6-9]').hasMatch(num)) {
-              // skip phone number
-            } else {
+            if (!(num.length == 10 && RegExp(r'^[6-9]').hasMatch(num))) {
               accountNumber = num;
               consumed.add(i);
               continue;
@@ -215,7 +250,7 @@ class ChequeDetails {
         }
       }
 
-      // Cheque number (6 digits in MICR-like area)
+      // Cheque number (6 digits, mostly numeric line — MICR area)
       if (chequeNumber == null) {
         final chequeMatch = chequeNumPattern.firstMatch(line);
         if (chequeMatch != null) {
@@ -238,36 +273,33 @@ class ChequeDetails {
         }
       }
 
-      // Address lines (contains address indicators)
+      // Address lines
       if (addressIndicators.hasMatch(line)) {
         addressLines.add(line);
         consumed.add(i);
       }
     }
 
-    // Build address from collected lines
     if (addressLines.isNotEmpty) {
       address = addressLines.join(', ');
     }
 
-    // If no account number found, try extracting from near IFSC line
+    // Fallback: extract account number from text near IFSC
     if (accountNumber == null && ifscCode != null) {
       final fullText = text.replaceAll(RegExp(r'\s+'), ' ');
-      final afterIfsc = fullText.split(RegExp(ifscCode, caseSensitive: false));
-      if (afterIfsc.length > 1) {
-        final accMatch = RegExp(r'(\d{9,18})').firstMatch(afterIfsc.last);
-        if (accMatch != null) {
-          accountNumber = accMatch.group(1);
-        }
+      final parts = fullText.split(RegExp(ifscCode, caseSensitive: false));
+      if (parts.length > 1) {
+        final accMatch = RegExp(r'(\d{9,18})').firstMatch(parts.last);
+        if (accMatch != null) accountNumber = accMatch.group(1);
       }
     }
 
-    // If bank name not found from patterns, check for "BANK" keyword in any line
+    // Fallback: bank name from any line with "Bank"
     if (bankName == null) {
-      for (final line in lines) {
-        if (RegExp(r'\bBank\b', caseSensitive: false).hasMatch(line) &&
-            line.length > 5 &&
-            !consumed.contains(lines.indexOf(line))) {
+      for (int i = 0; i < lines.length; i++) {
+        if (consumed.contains(i)) continue;
+        final line = lines[i];
+        if (RegExp(r'\bBank\b', caseSensitive: false).hasMatch(line) && line.length > 5) {
           bankName = line;
           break;
         }

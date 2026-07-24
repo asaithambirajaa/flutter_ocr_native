@@ -94,9 +94,12 @@ class DocumentTypeDetector {
     if (upper.contains('GIVEN NAME')) score += 2;
     if (upper.contains('PLACE OF BIRTH')) score += 2;
     if (upper.contains('DATE OF EXPIRY') || upper.contains('EXPIRY')) score += 1;
-    if (upper.contains('PLACE OF ISSUE')) score += 1;
+    if (upper.contains('PLACE OF ISSUE') || upper.contains('ISSUED AT')) score += 1;
     if (RegExp(r'\b[A-Z]\d{7}\b').hasMatch(text.toUpperCase())) score += 2;
     if (DocumentNumberValidator.extractPassport(text) != null) score += 2;
+    // MRZ lines: P<IND<SURNAME<<GIVEN or digit line with passport number
+    if (RegExp(r'P<[A-Z]{3}<').hasMatch(text.toUpperCase())) score += 5;
+    if (RegExp(r'^[A-Z]\d{7}\d[A-Z]{3}\d{6}\d[MF<]\d{6}\d', multiLine: true).hasMatch(text.toUpperCase())) score += 5;
     return score;
   }
 
