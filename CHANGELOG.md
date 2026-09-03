@@ -1,3 +1,27 @@
+## 0.3.5
+
+### Improvements
+
+* **Tamper detection config moved to Dart** — package users no longer need to edit native files (`OcrPlugin.kt` / `OcrPlugin.swift`) to configure tamper detection. All three check values are now passed from Dart via `checkDeviceSecurity()`:
+  - `expectedCertHash` — SHA-256 of your release signing certificate (Android)
+  - `expectedPackage` — your app's package name (Android)
+  - `checkInstaller` — set `true` in production to block sideloaded APKs (Android)
+  - All params are optional — omitting any one skips that check; safe to call with no params during development
+  - `OcrPlatformInterface.isDeviceCompromised()` and `OcrMethodChannel.isDeviceCompromised()` updated to accept and forward the same params
+  - `isDeviceRooted()` and `isAppTampered()` in `OcrPlugin.kt` updated to accept params instead of hardcoded config vars — no more `TODO` placeholders in native code
+
+```dart
+// Development — no config needed
+final security = await OcrIntegrity.checkDeviceSecurity();
+
+// Production — pass your values from Dart
+final security = await OcrIntegrity.checkDeviceSecurity(
+  expectedCertHash: 'A1:B2:C3:...',
+  expectedPackage: 'com.yourcompany.app',
+  checkInstaller: true,
+);
+```
+
 ## 0.3.4
 
 ### Security

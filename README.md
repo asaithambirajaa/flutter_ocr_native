@@ -40,7 +40,7 @@ A Flutter plugin for extracting text from images **and PDFs** using native on-de
 
 ```yaml
 dependencies:
-  flutter_ocr_native: ^0.3.4
+  flutter_ocr_native: ^0.3.5
 ```
 
 ### Android
@@ -394,11 +394,19 @@ Blocks KYC on rooted devices, jailbroken iPhones, emulators, BlueStacks, and tam
 Runs at app startup before any KYC screen loads — zero UX impact.
 
 ```dart
+// Development — no config needed, all tamper checks are skipped
 final security = await OcrIntegrity.checkDeviceSecurity();
 if (!security.secure) {
   // security.reason explains why — show blocked screen
   return;
 }
+
+// Production — pass your values from Dart, no native file edits needed
+final security = await OcrIntegrity.checkDeviceSecurity(
+  expectedCertHash: 'A1:B2:C3:...',    // SHA-256 of your release keystore
+  expectedPackage: 'com.yourcompany.app',
+  checkInstaller: true,                 // blocks sideloaded APKs
+);
 ```
 
 | Signal | Android | iOS |
@@ -408,23 +416,11 @@ if (!security.secure) {
 | Emulator / BlueStacks | ✅ filesystem + build signals | ✅ simulator flag |
 | Repackaged APK / IPA | ✅ cert hash + package name + installer source | ✅ MobileProvision + bundle ID + dylib injection |
 
-**One-time production setup — Android**: generate your release cert hash and set it in `OcrPlugin.kt`:
+**Android — generate your release cert hash:**
 
 ```bash
 keytool -list -v -keystore release.keystore -alias <your_alias>
-# Copy SHA-256 fingerprint → paste into EXPECTED_CERT_HASH
-```
-
-```kotlin
-val EXPECTED_CERT_HASH = "A1:B2:C3:..."         // your release keystore SHA-256
-val EXPECTED_PACKAGE   = "com.yourcompany.app"  // your package name
-val CHECK_INSTALLER    = true                    // enable in production
-```
-
-**One-time production setup — iOS**: set your bundle ID in `OcrPlugin.swift`:
-
-```swift
-let expectedBundleId = "com.yourcompany.app"
+# Copy the SHA-256 fingerprint and pass it as expectedCertHash above
 ```
 
 See [TAMPER_DETECTION.md](TAMPER_DETECTION.md) for full documentation, attack bypass analysis, and recommended additional hardening.
