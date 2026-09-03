@@ -24,9 +24,28 @@ class OcrIntegrity {
   /// Checks if the device is rooted (Android) or jailbroken (iOS).
   /// Returns a [DeviceSecurityResult] with the outcome and reason.
   /// On unsupported platforms (Windows, Linux, macOS) always returns secure.
-  static Future<DeviceSecurityResult> checkDeviceSecurity() async {
+  ///
+  /// [expectedCertHash] — SHA-256 of your release signing certificate
+  ///   (colon-separated uppercase hex, e.g. `'A1:B2:C3:...'`).
+  ///   Generate with: `keytool -list -v -keystore release.keystore -alias <alias>`
+  ///   Leave null to skip the cert check.
+  ///
+  /// [expectedPackage] — your app's package name (e.g. `'com.yourcompany.app'`).
+  ///   Leave null to skip the package name check.
+  ///
+  /// [checkInstaller] — set `true` in production to block sideloaded APKs.
+  ///   Keep `false` during development (ADB installs will be blocked otherwise).
+  static Future<DeviceSecurityResult> checkDeviceSecurity({
+    String? expectedCertHash,
+    String? expectedPackage,
+    bool checkInstaller = false,
+  }) async {
     try {
-      final compromised = await OcrMethodChannel().isDeviceCompromised();
+      final compromised = await OcrMethodChannel().isDeviceCompromised(
+        expectedCertHash: expectedCertHash,
+        expectedPackage: expectedPackage,
+        checkInstaller: checkInstaller,
+      );
       if (compromised) {
         return const DeviceSecurityResult._(
           secure: false,
@@ -36,7 +55,6 @@ class OcrIntegrity {
       }
       return const DeviceSecurityResult._(secure: true, reason: 'Device is secure.');
     } catch (_) {
-      // Platform not supported or check failed — fail open on non-mobile
       return const DeviceSecurityResult._(secure: true, reason: 'Device security check not applicable.');
     }
   }

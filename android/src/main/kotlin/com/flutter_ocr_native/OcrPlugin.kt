@@ -344,7 +344,11 @@ class OcrPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
                 }
                 getPdfPageCount(bytes, result)
             }
-            "isDeviceCompromised" -> result.success(isDeviceRooted())
+            "isDeviceCompromised" -> result.success(isDeviceRooted(
+                expectedCertHash = call.argument<String>("expectedCertHash"),
+                expectedPackage = call.argument<String>("expectedPackage"),
+                checkInstaller = call.argument<Boolean>("checkInstaller") ?: false,
+            ))
             else -> result.notImplemented()
         }
     }
@@ -354,14 +358,18 @@ class OcrPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
      * Returns true if any signal indicates the device is rooted or the app is tampered.
      * Uses only Android APIs — no third-party library needed.
      */
-    private fun isDeviceRooted(): Boolean {
+    private fun isDeviceRooted(
+        expectedCertHash: String? = null,
+        expectedPackage: String? = null,
+        checkInstaller: Boolean = false,
+    ): Boolean {
         return isEmulator()
             || checkSuBinary()
             || checkDangerousApps()
             || checkRWPaths()
             || checkBuildTags()
             || checkTestKeys()
-            || isAppTampered()
+            || isAppTampered(expectedCertHash, expectedPackage, checkInstaller)
     }
 
     /**
@@ -379,31 +387,15 @@ class OcrPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
      *       Set EXPECTED_PACKAGE to your app's package name.
      *       Set CHECK_INSTALLER to false during development/testing.
      */
-    private fun isAppTampered(): Boolean {
-        // ── Configuration ────────────────────────────────────────────────────
-        // SHA-256 of your release signing certificate (colon-separated hex, uppercase)
-        // Example: "A1:B2:C3:D4:..."
-        val EXPECTED_CERT_HASH = "TODO:REPLACE_WITH_YOUR_RELEASE_CERT_SHA256"
-
-        // Your app's package name
-        val EXPECTED_PACKAGE = "com.yourcompany.yourapp"
-
-        // Set to true in production — blocks sideloaded APKs
-        val CHECK_INSTALLER = false
-        // ─────────────────────────────────────────────────────────────────────
-
-        // Skip cert check if not configured yet
-        val certConfigured = !EXPECTED_CERT_HASH.startsWith("TODO")
-
+    private fun isAppTampered(
+        expectedCertHash: String? = null,
+        expectedPackage: String? = null,
+        checkInstaller: Boolean = false,
+    ): Boolean {
         try {
-            // Check 1: Package name
-            if (context.packageName != EXPECTED_PACKAGE &&
-                EXPECTED_PACKAGE != "com.yourcompany.yourapp") {
-                return true
-            }
+            if (expectedPackage != null && context.packageName != expectedPackage) return true
 
-            // Check 2: Signing certificate hash
-            if (certConfigured) {
+            if (expectedCertHash != null) {
                 val pm = context.packageManager
                 @Suppress("DEPRECATION")
                 val packageInfo = pm.getPackageInfo(
@@ -413,38 +405,28 @@ class OcrPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
                 @Suppress("DEPRECATION")
                 val signatures = packageInfo.signatures
                 if (signatures == null || signatures.isEmpty()) return true
-
-                val md = java.security.MessageDigest.getInstance("SHA-256")
-                val certBytes = signatures[0].toByteArray()
-                val digest = md.digest(certBytes)
+                val digest = java.security.MessageDigest.getInstance("SHA-256").digest(signatures[0].toByteArray())
                 val actualHash = digest.joinToString(":") { "%02X".format(it) }
-
-                if (actualHash != EXPECTED_CERT_HASH) return true
+                if (actualHash != expectedCertHash) return true
             }
 
-            // Check 3: Installer source (Play Store only)
-            if (CHECK_INSTALLER) {
+            if (checkInstaller) {
                 val installer = try {
                     if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
-                        context.packageManager
-                            .getInstallSourceInfo(context.packageName)
-                            .installingPackageName
+                        context.packageManager.getInstallSourceInfo(context.packageName).installingPackageName
                     } else {
                         @Suppress("DEPRECATION")
                         context.packageManager.getInstallerPackageName(context.packageName)
                     }
                 } catch (_: Exception) { null }
-
                 if (installer != "com.android.vending") return true
             }
 
             return false
         } catch (_: Exception) {
-            return false // Fail open — don't block on unexpected errors
+            return false
         }
     }
-
-    /** Checks for su binary in common root locations. */
     private fun checkSuBinary(): Boolean {
         val paths = arrayOf(
             "/system/bin/su", "/system/xbin/su", "/sbin/su",

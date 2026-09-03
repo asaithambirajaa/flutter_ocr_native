@@ -43,9 +43,17 @@ class OcrMethodChannel implements OcrPlatformInterface {
   }
 
   @override
-  Future<bool> isDeviceCompromised() async {
+  Future<bool> isDeviceCompromised({
+    String? expectedCertHash,
+    String? expectedPackage,
+    bool checkInstaller = false,
+  }) async {
     try {
-      final result = await _channel.invokeMethod<bool>('isDeviceCompromised');
+      final result = await _channel.invokeMethod<bool>('isDeviceCompromised', {
+        if (expectedCertHash != null) 'expectedCertHash': expectedCertHash,
+        if (expectedPackage != null) 'expectedPackage': expectedPackage,
+        'checkInstaller': checkInstaller,
+      });
       return result ?? false;
     } catch (_) {
       return false;
