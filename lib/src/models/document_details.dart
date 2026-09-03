@@ -379,4 +379,25 @@ class DocumentDetails {
       rawText: rawText,
     );
   }
+
+  /// Returns a copy with fields mutated — used only in tamper detection tests.
+  /// Do NOT use in production code.
+  DocumentDetails copyWithTampered({
+    String? documentNumber,
+    String? name,
+  }) =>
+      DocumentDetails(
+        docType: docType,
+        documentNumber: documentNumber ?? this.documentNumber,
+        name: name ?? this.name,
+        fatherName: fatherName,
+        dob: dob,
+        gender: gender,
+        address: address,
+        isValid: isValid,
+        validationError: validationError,
+        photoBytes: photoBytes,
+        extraFields: extraFields,
+        rawText: rawText,
+      );
 }

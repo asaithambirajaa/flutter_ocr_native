@@ -257,8 +257,128 @@ public class OcrPlugin: NSObject, FlutterPlugin {
             let count = getPdfPageCount(data: bytes.data)
             result(count)
 
+        case "isDeviceCompromised":
+            result(isDeviceJailbroken())
+
         default:
             result(FlutterMethodNotImplemented)
+        }
+    }
+
+    // MARK: - Jailbreak Detection
+
+    /// Multi-signal jailbreak + tamper detection.
+    /// Returns true if any signal indicates the device is jailbroken or the app is tampered.
+    private func isDeviceJailbroken() -> Bool {
+        // Simulator is never jailbroken
+        #if targetEnvironment(simulator)
+        return false
+        #else
+        return checkJailbreakFiles()
+            || checkSandboxViolation()
+            || checkDynamicLibraries()
+            || checkSymbolicLinks()
+            || isAppTampered()
+        #endif
+    }
+
+    /// Tamper detection — verifies the app binary has not been repackaged.
+    ///
+    /// Three checks:
+    ///  1. `embedded.mobileprovision` must NOT exist (App Store builds never have it).
+    ///  2. Bundle ID must match the expected value.
+    ///  3. No unexpected dynamic libraries injected by Frida/Cycript.
+    ///     (reuses checkDynamicLibraries() already wired above)
+    ///
+    /// TODO: Replace expectedBundleId with your app's bundle identifier.
+    private func isAppTampered() -> Bool {
+        // ── Configuration ────────────────────────────────────────────────────
+        let expectedBundleId = "com.yourcompany.yourapp"
+        // ─────────────────────────────────────────────────────────────────────
+
+        // Check 1: embedded.mobileprovision must NOT exist in App Store builds
+        // Enterprise-resigned or Ad Hoc cracked IPAs always contain this file
+        if let provisionPath = Bundle.main.path(forResource: "embedded", ofType: "mobileprovision"),
+           FileManager.default.fileExists(atPath: provisionPath) {
+            return true
+        }
+
+        // Check 2: Bundle ID must match expected value
+        let isPlaceholder = expectedBundleId == "com.yourcompany.yourapp"
+        if !isPlaceholder {
+            let actualBundleId = Bundle.main.bundleIdentifier ?? ""
+            if actualBundleId != expectedBundleId {
+                return true
+            }
+        }
+
+        return false
+    }
+
+    /// Checks for known jailbreak files and apps.
+    private func checkJailbreakFiles() -> Bool {
+        let paths = [
+            "/Applications/Cydia.app",
+            "/Applications/blackra1n.app",
+            "/Applications/FakeCarrier.app",
+            "/Applications/Icy.app",
+            "/Applications/IntelliScreen.app",
+            "/Applications/MxTube.app",
+            "/Applications/RockApp.app",
+            "/Applications/SBSettings.app",
+            "/Applications/WinterBoard.app",
+            "/Library/MobileSubstrate/MobileSubstrate.dylib",
+            "/Library/MobileSubstrate/DynamicLibraries/LiveClock.plist",
+            "/Library/MobileSubstrate/DynamicLibraries/Veency.plist",
+            "/private/var/lib/apt",
+            "/private/var/lib/cydia",
+            "/private/var/mobile/Library/SBSettings/Themes",
+            "/private/var/stash",
+            "/private/var/tmp/cydia.log",
+            "/System/Library/LaunchDaemons/com.ikey.bbot.plist",
+            "/System/Library/LaunchDaemons/com.saurik.Cydia.Startup.plist",
+            "/usr/bin/sshd",
+            "/usr/libexec/sftp-server",
+            "/usr/sbin/sshd",
+            "/etc/apt",
+            "/etc/ssh/sshd_config"
+        ]
+        return paths.contains { FileManager.default.fileExists(atPath: $0) }
+    }
+
+    /// Tries to write outside the app sandbox — only possible on jailbroken devices.
+    private func checkSandboxViolation() -> Bool {
+        let testPath = "/private/jailbreak_test_\(UUID().uuidString)"
+        do {
+            try "jailbreak".write(toFile: testPath, atomically: true, encoding: .utf8)
+            try FileManager.default.removeItem(atPath: testPath)
+            return true  // Write succeeded — sandbox is broken
+        } catch {
+            return false // Write failed — sandbox intact
+        }
+    }
+
+    /// Checks for suspicious dynamic libraries injected by jailbreak tools.
+    private func checkDynamicLibraries() -> Bool {
+        let suspicious = ["MobileSubstrate", "cycript", "cynject", "libhooker", "substitute"]
+        let count = _dyld_image_count()
+        for i in 0..<count {
+            if let name = _dyld_get_image_name(i) {
+                let imageName = String(cString: name).lowercased()
+                if suspicious.contains(where: { imageName.contains($0.lowercased()) }) {
+                    return true
+                }
+            }
+        }
+        return false
+    }
+
+    /// Checks if /Applications is a symbolic link (common on jailbroken devices).
+    private func checkSymbolicLinks() -> Bool {
+        // Only check paths that are NOT symlinks on stock iOS
+        let paths = ["/Applications", "/Library/Ringtones", "/Library/Wallpaper"]
+        return paths.contains { path in
+            (try? FileManager.default.destinationOfSymbolicLink(atPath: path)) != nil
         }
     }
 

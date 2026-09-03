@@ -27,6 +27,7 @@ A Flutter plugin for extracting text from images **and PDFs** using native on-de
 - Passport, Driving License, Voter ID, IFSC, Account number validation
 - **Face extraction** from document images (Android, iOS, macOS)
 - **Smart handwriting detection** — per-document-type policy; passport signatures and cheque handwriting no longer cause false rejections
+- **Device & app security** — root detection, jailbreak detection, emulator detection, app tamper detection
 - Document viewer with pinch-to-zoom
 - Download with configurable watermark (Lead ID, Lat, Long, etc.)
 - Watermark auto-scales to image resolution — always readable
@@ -39,7 +40,7 @@ A Flutter plugin for extracting text from images **and PDFs** using native on-de
 
 ```yaml
 dependencies:
-  flutter_ocr_native: ^0.3.3
+  flutter_ocr_native: ^0.3.4
 ```
 
 ### Android
@@ -387,6 +388,47 @@ final reader = OcrReader(
 );
 ```
 
+### Device & App Security
+
+Blocks KYC on rooted devices, jailbroken iPhones, emulators, BlueStacks, and tampered/repackaged app binaries.
+Runs at app startup before any KYC screen loads — zero UX impact.
+
+```dart
+final security = await OcrIntegrity.checkDeviceSecurity();
+if (!security.secure) {
+  // security.reason explains why — show blocked screen
+  return;
+}
+```
+
+| Signal | Android | iOS |
+|---|---|---|
+| Rooted device | ✅ su binary, dangerous apps, rw paths, test-keys | — |
+| Jailbroken device | — | ✅ Cydia, sandbox violation, dylib injection, symlinks |
+| Emulator / BlueStacks | ✅ filesystem + build signals | ✅ simulator flag |
+| Repackaged APK / IPA | ✅ cert hash + package name + installer source | ✅ MobileProvision + bundle ID + dylib injection |
+
+**One-time production setup — Android**: generate your release cert hash and set it in `OcrPlugin.kt`:
+
+```bash
+keytool -list -v -keystore release.keystore -alias <your_alias>
+# Copy SHA-256 fingerprint → paste into EXPECTED_CERT_HASH
+```
+
+```kotlin
+val EXPECTED_CERT_HASH = "A1:B2:C3:..."         // your release keystore SHA-256
+val EXPECTED_PACKAGE   = "com.yourcompany.app"  // your package name
+val CHECK_INSTALLER    = true                    // enable in production
+```
+
+**One-time production setup — iOS**: set your bundle ID in `OcrPlugin.swift`:
+
+```swift
+let expectedBundleId = "com.yourcompany.app"
+```
+
+See [TAMPER_DETECTION.md](TAMPER_DETECTION.md) for full documentation, attack bypass analysis, and recommended additional hardening.
+
 ### Toggle at Runtime
 
 ```dart
@@ -473,6 +515,16 @@ OcrValidator                   validate(result, docType)
 OcrWatermark                   lines, textColor, backgroundColor, fontSize
 OcrImageFormat                 jpeg / png
 
+OcrIntegrity                   checkDeviceSecurity() → DeviceSecurityResult
+                               hashDetails / hashImage
+                               checkImageQuality / checkConfidence
+                               consistencyErrors / verify
+                               persistAuditRecord / persistTamperEvent
+DeviceSecurityResult           secure, reason
+OcrAuditRecord                 create() / fromJson() / toJson()
+OcrVerificationResult          passed, reason
+TamperEvent                    fromVerification() / toJson()
+
 EmptyImageException            thrown when no text detected
 HandwrittenTextException       thrown when document is fully handwritten
 
@@ -500,6 +552,8 @@ lib/
     │   └── voter_id_details.dart           # internal — VoterIdDetails parser
     ├── utils/
     │   └── ocr_document_saver.dart         # Download, save, watermark, compress, face, orientation, PDF
+    ├── security/
+    │   └── ocr_integrity.dart              # Device security, tamper detection, audit trail, hashing
     ├── validators/
     │   ├── document_number_validator.dart  # Aadhaar, PAN, Passport, DL, Voter ID, IFSC validation
     │   ├── document_type_detector.dart     # Auto-detect document type from OCR text

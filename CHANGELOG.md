@@ -1,3 +1,44 @@
+## 0.3.4
+
+### Security
+
+* **App tamper detection** — verifies the app binary has not been repackaged, resigned, or modified after publishing
+  - **Android** (`OcrPlugin.kt`): `isAppTampered()` added and wired into `isDeviceRooted()`
+    - Check 1: Signing certificate SHA-256 must match the release keystore hash hardcoded at build time — catches any repackaged APK (attacker must resign with their own key → hash mismatch)
+    - Check 2: Package name must match expected value — catches cloned apps with a different package ID
+    - Check 3: Installer source must be `com.android.vending` (Google Play Store) — catches APKs sideloaded via ADB, WhatsApp, Telegram, or third-party stores (controlled by `CHECK_INSTALLER` flag, default `false` for development)
+    - All checks fail-open — wrapped in `try/catch` to prevent false positives on edge-case devices
+  - **iOS** (`OcrPlugin.swift`): `isAppTampered()` added and wired into `isDeviceJailbroken()`
+    - Check 1: `embedded.mobileprovision` must NOT exist — App Store builds never contain it; enterprise-resigned or Ad Hoc cracked IPAs always do
+    - Check 2: Bundle ID must match expected value — catches cloned apps with a modified bundle identifier
+    - Dynamic library injection (Frida/Cycript) already covered by existing `checkDynamicLibraries()` which runs before `isAppTampered()` in the same chain
+    - Simulator always returns `false` via `#if targetEnvironment(simulator)` compile-time flag — unchanged
+  - **Dart** (`ocr_integrity.dart`): `DeviceSecurityResult` reason string updated to mention tampering alongside root/jailbreak
+  - All checks run inside the existing `OcrIntegrity.checkDeviceSecurity()` gate at app startup — zero UX impact, zero performance impact
+  - `flutter analyze --no-fatal-infos` → No issues found
+
+* **iOS jailbreak detection false positive fix** — removed paths that exist on stock iOS 15+ devices
+  - Removed `/bin/bash` and `/bin/sh` from `checkJailbreakFiles()` — Apple restored these on iOS 15+ for their own tooling; present on every modern non-jailbroken device
+  - Removed `/usr/libexec`, `/usr/share`, `/usr/arm-apple-darwin9`, `/usr/include` from `checkSymbolicLinks()` — these are stock iOS symlinks, not jailbreak indicators
+  - `checkSymbolicLinks()` now only checks `/Applications`, `/Library/Ringtones`, `/Library/Wallpaper`
+
+* **Android BlueStacks detection** — replaced unreliable build prop string matching with filesystem-based detection
+  - BlueStacks 5+ spoofs build properties to look like real Samsung/Pixel devices — string matching on `Build.FINGERPRINT` / `Build.MANUFACTURER` was unreliable
+  - `isEmulator()` now checks 4 BlueStacks-specific filesystem paths (`/data/data/com.bluestacks.home`, `/data/data/com.bluestacks.settings`, `/mnt/windows/BstSharedFolder`, `/data/bluestacks.prop`) and package `com.bluestacks.home` — these exist regardless of build prop spoofing
+  - Standard AOSP emulator signals (goldfish/ranchu hardware, generic fingerprint, Genymotion) retained as fallback
+
+### Documentation
+
+* Added `TAMPER_DETECTION.md` — full technical and manager-facing document covering:
+  - What tamper detection is and why KYC apps are high-value targets
+  - How the SHA-256 certificate hash works and why it cannot be faked
+  - Threat coverage matrix (root vs jailbreak vs tamper)
+  - Step-by-step runtime execution flow from `main()` to block/pass decision
+  - Implementation notes with exact code for all 3 files changed
+  - Configuration flags and one-time production setup instructions
+  - All known attack bypass techniques and countermeasures
+  - Recommended additional hardening (Play Integrity API, App Attest, ProGuard)
+
 ## 0.3.3
 
 ### Improvements

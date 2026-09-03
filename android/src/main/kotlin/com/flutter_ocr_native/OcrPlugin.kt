@@ -344,8 +344,198 @@ class OcrPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
                 }
                 getPdfPageCount(bytes, result)
             }
+            "isDeviceCompromised" -> result.success(isDeviceRooted())
             else -> result.notImplemented()
         }
+    }
+
+    /**
+     * Multi-signal root + tamper detection.
+     * Returns true if any signal indicates the device is rooted or the app is tampered.
+     * Uses only Android APIs — no third-party library needed.
+     */
+    private fun isDeviceRooted(): Boolean {
+        return isEmulator()
+            || checkSuBinary()
+            || checkDangerousApps()
+            || checkRWPaths()
+            || checkBuildTags()
+            || checkTestKeys()
+            || isAppTampered()
+    }
+
+    /**
+     * Tamper detection — verifies the app binary has not been repackaged.
+     *
+     * Three checks:
+     *  1. Signing certificate SHA-256 must match the release keystore hash.
+     *  2. Package name must match the expected value.
+     *  3. Installer must be Google Play Store (not sideloaded).
+     *
+     * TODO: Replace EXPECTED_CERT_HASH with your release keystore SHA-256.
+     *       Generate it with:
+     *         keytool -list -v -keystore release.keystore -alias <alias>
+     *       Copy the SHA-256 fingerprint (colon-separated hex) and paste below.
+     *       Set EXPECTED_PACKAGE to your app's package name.
+     *       Set CHECK_INSTALLER to false during development/testing.
+     */
+    private fun isAppTampered(): Boolean {
+        // ── Configuration ────────────────────────────────────────────────────
+        // SHA-256 of your release signing certificate (colon-separated hex, uppercase)
+        // Example: "A1:B2:C3:D4:..."
+        val EXPECTED_CERT_HASH = "TODO:REPLACE_WITH_YOUR_RELEASE_CERT_SHA256"
+
+        // Your app's package name
+        val EXPECTED_PACKAGE = "com.yourcompany.yourapp"
+
+        // Set to true in production — blocks sideloaded APKs
+        val CHECK_INSTALLER = false
+        // ─────────────────────────────────────────────────────────────────────
+
+        // Skip cert check if not configured yet
+        val certConfigured = !EXPECTED_CERT_HASH.startsWith("TODO")
+
+        try {
+            // Check 1: Package name
+            if (context.packageName != EXPECTED_PACKAGE &&
+                EXPECTED_PACKAGE != "com.yourcompany.yourapp") {
+                return true
+            }
+
+            // Check 2: Signing certificate hash
+            if (certConfigured) {
+                val pm = context.packageManager
+                @Suppress("DEPRECATION")
+                val packageInfo = pm.getPackageInfo(
+                    context.packageName,
+                    android.content.pm.PackageManager.GET_SIGNATURES
+                )
+                @Suppress("DEPRECATION")
+                val signatures = packageInfo.signatures
+                if (signatures == null || signatures.isEmpty()) return true
+
+                val md = java.security.MessageDigest.getInstance("SHA-256")
+                val certBytes = signatures[0].toByteArray()
+                val digest = md.digest(certBytes)
+                val actualHash = digest.joinToString(":") { "%02X".format(it) }
+
+                if (actualHash != EXPECTED_CERT_HASH) return true
+            }
+
+            // Check 3: Installer source (Play Store only)
+            if (CHECK_INSTALLER) {
+                val installer = try {
+                    if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
+                        context.packageManager
+                            .getInstallSourceInfo(context.packageName)
+                            .installingPackageName
+                    } else {
+                        @Suppress("DEPRECATION")
+                        context.packageManager.getInstallerPackageName(context.packageName)
+                    }
+                } catch (_: Exception) { null }
+
+                if (installer != "com.android.vending") return true
+            }
+
+            return false
+        } catch (_: Exception) {
+            return false // Fail open — don't block on unexpected errors
+        }
+    }
+
+    /** Checks for su binary in common root locations. */
+    private fun checkSuBinary(): Boolean {
+        val paths = arrayOf(
+            "/system/bin/su", "/system/xbin/su", "/sbin/su",
+            "/system/su", "/system/bin/.ext/.su",
+            "/system/usr/we-need-root/su", "/data/local/su",
+            "/data/local/bin/su", "/data/local/xbin/su",
+            "/system/app/Superuser.apk", "/system/app/SuperSU.apk"
+        )
+        return paths.any { java.io.File(it).exists() }
+    }
+
+    /** Checks for known root management apps installed on the device. */
+    private fun checkDangerousApps(): Boolean {
+        val packages = arrayOf(
+            "com.topjohnwu.magisk",          // Magisk
+            "com.noshufou.android.su",        // SuperUser
+            "com.noshufou.android.su.elite",
+            "eu.chainfire.supersu",           // SuperSU
+            "com.koushikdutta.superuser",
+            "com.thirdparty.superuser",
+            "com.yellowes.su",
+            "com.kingroot.kinguser",          // KingRoot
+            "com.kingo.root",                 // KingoRoot
+            "com.smedialink.oneclickroot",
+            "com.zhiqupk.root.global",
+            "com.alephzain.framaroot",
+            "com.devadvance.rootcloak",       // Root cloak (hides root)
+            "com.devadvance.rootcloakplus",
+            "de.robv.android.xposed.installer" // Xposed framework
+        )
+        val pm = context.packageManager
+        return packages.any { pkg ->
+            try { pm.getPackageInfo(pkg, 0); true } catch (_: Exception) { false }
+        }
+    }
+
+    /** Checks if system paths are writable (should never be on a stock device). */
+    private fun checkRWPaths(): Boolean {
+        val paths = arrayOf("/system", "/system/bin", "/system/sbin",
+            "/system/xbin", "/vendor/bin", "/sbin", "/etc")
+        return paths.any { path ->
+            try {
+                val process = Runtime.getRuntime().exec(arrayOf("mount"))
+                val output = process.inputStream.bufferedReader().readText()
+                process.destroy()
+                // Look for the path mounted as rw
+                output.lines().any { line ->
+                    line.contains(path) && line.contains(" rw,")
+                }
+            } catch (_: Exception) { false }
+        }
+    }
+
+    /** Checks android.os.Build.TAGS for test-keys (sign of custom ROM). */
+    private fun checkBuildTags(): Boolean {
+        val tags = android.os.Build.TAGS ?: return false
+        return tags.contains("test-keys")
+    }
+
+    /** Checks if the build fingerprint contains test-keys (sign of custom ROM). */
+    private fun checkTestKeys(): Boolean {
+        val fingerprint = android.os.Build.FINGERPRINT ?: return false
+        return fingerprint.contains("test-keys")
+    }
+
+    /** Returns true if running inside any emulator or BlueStacks. */
+    private fun isEmulator(): Boolean {
+        // BlueStacks: always has these files regardless of how it spoofs build props
+        val blueStacksFiles = arrayOf(
+            "/data/data/com.bluestacks.home",
+            "/data/data/com.bluestacks.settings",
+            "/mnt/windows/BstSharedFolder",
+            "/data/bluestacks.prop"
+        )
+        if (blueStacksFiles.any { java.io.File(it).exists() }) return true
+
+        // BlueStacks package installed
+        try {
+            context.packageManager.getPackageInfo("com.bluestacks.home", 0)
+            return true
+        } catch (_: Exception) {}
+
+        // Standard AOSP emulator (goldfish/ranchu kernel)
+        val fp = android.os.Build.FINGERPRINT ?: ""
+        val hardware = android.os.Build.HARDWARE ?: ""
+        return fp.contains("generic") || fp.contains("vbox") || fp.contains("genymotion")
+            || hardware.contains("goldfish")
+            || hardware.contains("ranchu")
+            || hardware.contains("vbox")
+            || android.os.Build.MODEL.contains("Android SDK", ignoreCase = true)
+            || android.os.Build.MANUFACTURER.equals("Genymotion", ignoreCase = true)
     }
 
     private fun processImage(image: InputImage, bitmap: Bitmap, result: MethodChannel.Result) {

@@ -8,5 +8,6 @@ abstract class OcrPlatformInterface {
   Future<Uint8List?> renderPdfPage(Uint8List pdfBytes,
       {int page = 0, double scale = 2.0});
   Future<int> getPdfPageCount(Uint8List pdfBytes);
+  Future<bool> isDeviceCompromised();
   Future<void> dispose();
 }

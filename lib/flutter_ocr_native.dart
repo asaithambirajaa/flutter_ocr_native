@@ -25,6 +25,9 @@ export 'src/validators/document_type_detector.dart';
 // HandwritingPolicy is internal — app only uses OcrValidator.validate().
 export 'src/validators/ocr_validator.dart' hide HandwritingPolicy;
 
+// ── Security / Integrity ─────────────────────────────────────────────────────
+export 'src/security/ocr_integrity.dart';
+
 // ── Widgets ───────────────────────────────────────────────────────────────────
 export 'src/widgets/ocr_capture_instructions.dart';
 export 'src/widgets/ocr_document_viewer.dart';
