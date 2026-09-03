@@ -258,7 +258,10 @@ public class OcrPlugin: NSObject, FlutterPlugin {
             result(count)
 
         case "isDeviceCompromised":
-            result(isDeviceJailbroken())
+            let args = call.arguments as? [String: Any]
+            result(isDeviceJailbroken(
+                expectedBundleId: args?["expectedPackage"] as? String
+            ))
 
         default:
             result(FlutterMethodNotImplemented)
@@ -269,8 +272,7 @@ public class OcrPlugin: NSObject, FlutterPlugin {
 
     /// Multi-signal jailbreak + tamper detection.
     /// Returns true if any signal indicates the device is jailbroken or the app is tampered.
-    private func isDeviceJailbroken() -> Bool {
-        // Simulator is never jailbroken
+    private func isDeviceJailbroken(expectedBundleId: String? = nil) -> Bool {
         #if targetEnvironment(simulator)
         return false
         #else
@@ -278,7 +280,7 @@ public class OcrPlugin: NSObject, FlutterPlugin {
             || checkSandboxViolation()
             || checkDynamicLibraries()
             || checkSymbolicLinks()
-            || isAppTampered()
+            || isAppTampered(expectedBundleId: expectedBundleId)
         #endif
     }
 
@@ -290,26 +292,18 @@ public class OcrPlugin: NSObject, FlutterPlugin {
     ///  3. No unexpected dynamic libraries injected by Frida/Cycript.
     ///     (reuses checkDynamicLibraries() already wired above)
     ///
-    /// TODO: Replace expectedBundleId with your app's bundle identifier.
-    private func isAppTampered() -> Bool {
-        // ── Configuration ────────────────────────────────────────────────────
-        let expectedBundleId = "com.yourcompany.yourapp"
-        // ─────────────────────────────────────────────────────────────────────
-
+    private func isAppTampered(expectedBundleId: String? = nil) -> Bool {
         // Check 1: embedded.mobileprovision must NOT exist in App Store builds
         // Enterprise-resigned or Ad Hoc cracked IPAs always contain this file
         if let provisionPath = Bundle.main.path(forResource: "embedded", ofType: "mobileprovision"),
            FileManager.default.fileExists(atPath: provisionPath) {
             return true
-        }
+    }
 
         // Check 2: Bundle ID must match expected value
-        let isPlaceholder = expectedBundleId == "com.yourcompany.yourapp"
-        if !isPlaceholder {
+        if let bundleId = expectedBundleId {
             let actualBundleId = Bundle.main.bundleIdentifier ?? ""
-            if actualBundleId != expectedBundleId {
-                return true
-            }
+            if actualBundleId != bundleId { return true }
         }
 
         return false
