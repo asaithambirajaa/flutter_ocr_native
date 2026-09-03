@@ -40,7 +40,7 @@ A Flutter plugin for extracting text from images **and PDFs** using native on-de
 
 ```yaml
 dependencies:
-  flutter_ocr_native: ^0.3.5
+  flutter_ocr_native: ^0.3.6
 ```
 
 ### Android
@@ -415,6 +415,8 @@ final security = await OcrIntegrity.checkDeviceSecurity(
 | Jailbroken device | — | ✅ Cydia, sandbox violation, dylib injection, symlinks |
 | Emulator / BlueStacks | ✅ filesystem + build signals | ✅ simulator flag |
 | Repackaged APK / IPA | ✅ cert hash + package name + installer source | ✅ MobileProvision + bundle ID + dylib injection |
+
+**`expectedPackage` works for both platforms** — Android uses it as the package name, iOS uses it as the bundle ID. One Dart call configures both.
 
 **Android — generate your release cert hash:**
 

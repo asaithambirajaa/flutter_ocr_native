@@ -1,26 +1,24 @@
+## 0.3.6
+
+### Bug Fixes
+
+* **iOS tamper detection config now passed from Dart** — `isAppTampered()` in `OcrPlugin.swift` previously had a hardcoded `expectedBundleId` placeholder that required editing the native file. It now accepts the value from Dart via `expectedPackage` — same param, zero native edits on both platforms
+  - `isDeviceJailbroken()` updated to accept and forward `expectedBundleId` param
+  - `isAppTampered()` updated to accept `expectedBundleId` param — bundle ID check skipped if `nil` (safe default for development)
+  - Removed `TODO` comment and hardcoded `"com.yourcompany.yourapp"` placeholder from `OcrPlugin.swift`
+  - `expectedPackage` in `checkDeviceSecurity()` now configures both Android (package name) and iOS (bundle ID) from a single Dart call
+
 ## 0.3.5
 
 ### Improvements
 
-* **Tamper detection config moved to Dart** — package users no longer need to edit native files (`OcrPlugin.kt` / `OcrPlugin.swift`) to configure tamper detection. All three check values are now passed from Dart via `checkDeviceSecurity()`:
+* **Tamper detection config moved to Dart (Android)** — package users no longer need to edit `OcrPlugin.kt` to configure tamper detection. All three check values are now passed from Dart via `checkDeviceSecurity()`:
   - `expectedCertHash` — SHA-256 of your release signing certificate (Android)
-  - `expectedPackage` — your app's package name (Android)
+  - `expectedPackage` — your app's package name (Android) / bundle ID (iOS)
   - `checkInstaller` — set `true` in production to block sideloaded APKs (Android)
   - All params are optional — omitting any one skips that check; safe to call with no params during development
   - `OcrPlatformInterface.isDeviceCompromised()` and `OcrMethodChannel.isDeviceCompromised()` updated to accept and forward the same params
   - `isDeviceRooted()` and `isAppTampered()` in `OcrPlugin.kt` updated to accept params instead of hardcoded config vars — no more `TODO` placeholders in native code
-
-```dart
-// Development — no config needed
-final security = await OcrIntegrity.checkDeviceSecurity();
-
-// Production — pass your values from Dart
-final security = await OcrIntegrity.checkDeviceSecurity(
-  expectedCertHash: 'A1:B2:C3:...',
-  expectedPackage: 'com.yourcompany.app',
-  checkInstaller: true,
-);
-```
 
 ## 0.3.4
 
