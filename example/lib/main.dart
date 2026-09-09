@@ -603,6 +603,14 @@ class _OcrHomePageState extends State<OcrHomePage> {
         child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
           Text('${_docTypeLabel(_docType)} Details',
               style: Theme.of(context).textTheme.titleMedium),
+          if (kDebugMode)
+            Padding(
+              padding: const EdgeInsets.only(top: 4, bottom: 2),
+              child: Text(
+                'Tap any field to edit — triggers tamper detection on download',
+                style: TextStyle(fontSize: 11, color: Colors.grey.shade500),
+              ),
+            ),
           const Divider(),
           if (fields.isEmpty)
             const Text('No details detected')
@@ -644,6 +652,17 @@ class _OcrHomePageState extends State<OcrHomePage> {
   }
 
   Widget _detailRow(String label, String value) {
+    if (kDebugMode && _details != null) {
+      return _EditableDetailRow(
+        label: label,
+        value: value,
+        onChanged: (newValue) {
+          setState(() {
+            _details = _details!.copyWithField(label, newValue);
+          });
+        },
+      );
+    }
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 4),
       child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
@@ -709,69 +728,7 @@ class _OcrHomePageState extends State<OcrHomePage> {
                 ),
               ),
             ],
-            // ── Tamper simulation buttons (debug builds only) ──────────────
-            if (kDebugMode) ...[
-              const SizedBox(height: 12),
-              const Divider(),
-              Text(
-                'Tamper Detection Tests',
-                style: TextStyle(
-                    fontSize: 11,
-                    color: Colors.grey.shade600,
-                    fontWeight: FontWeight.w600),
-              ),
-              const SizedBox(height: 6),
-              Row(children: [
-                Expanded(
-                  child: OutlinedButton.icon(
-                    onPressed: () {
-                      // Mutate extracted fields → breaks dataHash
-                      setState(() {
-                        _details = _details!.copyWithTampered(
-                          name: 'TAMPERED NAME',
-                          documentNumber: '0000 0000 0000',
-                        );
-                      });
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(
-                          content: Text('⚠️ Data mutated — now tap Download'),
-                          backgroundColor: Colors.deepOrange,
-                          duration: Duration(seconds: 2),
-                        ),
-                      );
-                    },
-                    icon: const Icon(Icons.edit, size: 16),
-                    label: const Text('Tamper Data',
-                        style: TextStyle(fontSize: 12)),
-                    style: OutlinedButton.styleFrom(
-                        foregroundColor: Colors.deepOrange),
-                  ),
-                ),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: OutlinedButton.icon(
-                    onPressed: () {
-                      // Replace image bytes with noise → breaks imageHash
-                      final fake = Uint8List(100);
-                      for (int i = 0; i < fake.length; i++) { fake[i] = i % 256; }
-                      setState(() => _processedBytes = fake);
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(
-                          content: Text('⚠️ Image replaced — now tap Download'),
-                          backgroundColor: Colors.deepOrange,
-                          duration: Duration(seconds: 2),
-                        ),
-                      );
-                    },
-                    icon: const Icon(Icons.image_not_supported, size: 16),
-                    label: const Text('Tamper Image',
-                        style: TextStyle(fontSize: 12)),
-                    style: OutlinedButton.styleFrom(
-                        foregroundColor: Colors.deepOrange),
-                  ),
-                ),
-              ]),
-            ],
+
           ],
         ),
       ),
@@ -813,4 +770,101 @@ class _OcrHomePageState extends State<OcrHomePage> {
 
   IconData _docTypeIcon(DetectedDocType type) =>
       DocumentTypeDetector.icon(type);
+}
+
+/// Editable detail row — debug only.
+/// Tapping the value opens an inline text field.
+/// Any edit mutates _details via copyWithField, breaking the data hash.
+class _EditableDetailRow extends StatefulWidget {
+  final String label;
+  final String value;
+  final ValueChanged<String> onChanged;
+
+  const _EditableDetailRow({
+    required this.label,
+    required this.value,
+    required this.onChanged,
+  });
+
+  @override
+  State<_EditableDetailRow> createState() => _EditableDetailRowState();
+}
+
+class _EditableDetailRowState extends State<_EditableDetailRow> {
+  bool _editing = false;
+  late final TextEditingController _ctrl;
+
+  @override
+  void initState() {
+    super.initState();
+    _ctrl = TextEditingController(text: widget.value);
+  }
+
+  @override
+  void didUpdateWidget(_EditableDetailRow old) {
+    super.didUpdateWidget(old);
+    if (!_editing && old.value != widget.value) {
+      _ctrl.text = widget.value;
+    }
+  }
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Row(crossAxisAlignment: CrossAxisAlignment.center, children: [
+        SizedBox(
+          width: 120,
+          child: Text(widget.label,
+              style: TextStyle(
+                  color: Colors.grey.shade700,
+                  fontWeight: FontWeight.w600,
+                  fontSize: 13)),
+        ),
+        const Text(': '),
+        Expanded(
+          child: _editing
+              ? TextField(
+                  controller: _ctrl,
+                  autofocus: true,
+                  style: const TextStyle(
+                      fontWeight: FontWeight.w500,
+                      fontSize: 14,
+                      color: Colors.deepOrange),
+                  decoration: const InputDecoration(
+                    isDense: true,
+                    contentPadding:
+                        EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+                    border: OutlineInputBorder(),
+                  ),
+                  onSubmitted: (v) {
+                    setState(() => _editing = false);
+                    if (v != widget.value) widget.onChanged(v);
+                  },
+                  onTapOutside: (_) {
+                    setState(() => _editing = false);
+                    if (_ctrl.text != widget.value)
+                      widget.onChanged(_ctrl.text);
+                  },
+                )
+              : GestureDetector(
+                  onTap: () => setState(() => _editing = true),
+                  child: Row(children: [
+                    Expanded(
+                      child: Text(widget.value,
+                          style: const TextStyle(fontWeight: FontWeight.w500)),
+                    ),
+                    Icon(Icons.edit, size: 13, color: Colors.grey.shade400),
+                  ]),
+                ),
+        ),
+      ]),
+    );
+  }
 }

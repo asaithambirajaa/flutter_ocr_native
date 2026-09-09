@@ -400,4 +400,26 @@ class DocumentDetails {
         extraFields: extraFields,
         rawText: rawText,
       );
+
+  /// Returns a copy with a single display-map field overwritten by label.
+  /// Used in debug mode to simulate inline field editing for tamper detection demo.
+  /// Do NOT use in production code.
+  DocumentDetails copyWithField(String label, String value) {
+    final updatedExtra = Map<String, String>.from(extraFields);
+    updatedExtra[label] = value;
+    return DocumentDetails(
+      docType: docType,
+      documentNumber: label == 'Document No.' ? value : documentNumber,
+      name: label == 'Name' ? value : name,
+      fatherName: label == "Father's Name" ? value : fatherName,
+      dob: label == 'DOB' ? value : dob,
+      gender: label == 'Gender' ? value : gender,
+      address: label == 'Address' ? value : address,
+      isValid: isValid,
+      validationError: validationError,
+      photoBytes: photoBytes,
+      extraFields: updatedExtra,
+      rawText: rawText,
+    );
+  }
 }
