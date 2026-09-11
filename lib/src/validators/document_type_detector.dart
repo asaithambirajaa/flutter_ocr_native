@@ -119,13 +119,17 @@ class DocumentTypeDetector {
 
   static int _scoreVoterId(String upper, String text) {
     int score = 0;
-    if (upper.contains('ELECTION') || upper.contains('ELECTORAL')) score += 5;
-    if (upper.contains('VOTER') || upper.contains('EPIC')) score += 5;
-    if (upper.contains('COMMISSION')) score += 2;
-    if (upper.contains('PHOTO IDENTITY') || upper.contains('IDENTITY CARD')) score += 3;
-    if (upper.contains("ELECTOR")) score += 3;
-    if (RegExp(r'\b[A-Z]{3}\d{6,7}\b').hasMatch(text.toUpperCase())) score += 2;
-    if (DocumentNumberValidator.extractVoterId(text) != null) score += 3;
+    // Strong signals — unique to Voter ID
+    if (upper.contains('ELECTION')) score += 10;
+    if (upper.contains('ELECTORAL')) score += 10;
+    if (upper.contains('VOTER')) score += 8;
+    if (upper.contains('EPIC')) score += 8;
+    if (upper.contains('ELECTOR')) score += 8;
+    if (upper.contains('COMMISSION') && upper.contains('INDIA')) score += 5;
+    if (upper.contains('PHOTO IDENTITY') || upper.contains('IDENTITY CARD')) score += 5;
+    // EPIC number pattern (3 letters + 7 digits)
+    if (RegExp(r'\b[A-Z]{3}\d{7}\b').hasMatch(text.toUpperCase())) score += 5;
+    if (DocumentNumberValidator.extractVoterId(text) != null) score += 5;
     return score;
   }
 

@@ -14,3 +14,7 @@ class HandwrittenTextException extends OcrException {
   const HandwrittenTextException()
       : super('Handwritten text detected. Only printed documents are accepted');
 }
+
+class LowQualityImageException extends OcrException {
+  const LowQualityImageException(String detail) : super(detail);
+}

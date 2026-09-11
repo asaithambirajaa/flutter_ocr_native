@@ -241,8 +241,9 @@ final result = await reader.readFromBytes(
 
 | Document | Policy | Behaviour |
 |---|---|---|
-| Aadhaar, PAN, Voter ID | Strict | Rejected if native says not printed |
+| Aadhaar, PAN | Strict | Rejected if native says not printed |
 | Passport, Cheque, DL | Mixed | Only rejected if zero printed keywords found |
+| Voter ID | Skip | Handwriting check skipped (old laminated cards have typewritten fields) |
 
 ### Document Type Auto-Detection
 

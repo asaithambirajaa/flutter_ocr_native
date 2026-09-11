@@ -1,4 +1,7 @@
+import 'dart:async';
 import 'dart:io';
+
+import 'dart:ui' as ui;
 
 import 'package:flutter/services.dart';
 import 'package:path_provider/path_provider.dart';
@@ -233,6 +236,126 @@ class OcrDocumentSaver {
   /// Whether face extraction is supported on the current platform.
   static bool get isFaceExtractionSupported =>
       Platform.isAndroid || Platform.isIOS || Platform.isMacOS;
+
+  /// Enhances a low-quality image for better OCR accuracy.
+  ///
+  /// Pipeline (pure Dart, no native call):
+  ///   1. Grayscale conversion — removes colour noise
+  ///   2. Contrast stretch — expands pixel range to full 0–255
+  ///   3. Otsu binarization — adaptive black/white threshold for faded text
+  ///   4. Unsharp mask — sharpens edges on the binarized result
+  ///
+  /// Returns the enhanced image as PNG bytes, or the original bytes on failure.
+  /// Safe to call on any image — dramatically improves faded/low-contrast scans.
+  static Future<Uint8List> enhanceForOcr(Uint8List imageBytes) async {
+    try {
+      final codec = await ui.instantiateImageCodec(imageBytes);
+      final frame = await codec.getNextFrame();
+      final w = frame.image.width;
+      final h = frame.image.height;
+      final byteData =
+          await frame.image.toByteData(format: ui.ImageByteFormat.rawRgba);
+      frame.image.dispose();
+      if (byteData == null) return imageBytes;
+
+      final src = byteData.buffer.asUint8List();
+      final pixels = w * h;
+
+      // ── Step 1: Grayscale ─────────────────────────────────────────────────
+      final gray = Uint8List(pixels);
+      for (int i = 0; i < pixels; i++) {
+        final r = src[i * 4];
+        final g = src[i * 4 + 1];
+        final b = src[i * 4 + 2];
+        gray[i] = (0.299 * r + 0.587 * g + 0.114 * b).round().clamp(0, 255);
+      }
+
+      // ── Step 2: Contrast stretch ──────────────────────────────────────────
+      int minV = 255, maxV = 0;
+      for (final v in gray) {
+        if (v < minV) minV = v;
+        if (v > maxV) maxV = v;
+      }
+      final range = maxV - minV;
+      final stretched = Uint8List(pixels);
+      for (int i = 0; i < pixels; i++) {
+        stretched[i] =
+            range == 0 ? gray[i] : ((gray[i] - minV) * 255 ~/ range).clamp(0, 255);
+      }
+
+      // ── Step 3: Otsu binarization ─────────────────────────────────────────
+      // Build histogram
+      final hist = List<int>.filled(256, 0);
+      for (final v in stretched) hist[v]++;
+      // Find optimal threshold that maximises inter-class variance
+      double maxVar = 0;
+      int threshold = 128;
+      double sumAll = 0;
+      for (int i = 0; i < 256; i++) sumAll += i * hist[i];
+      double sumB = 0;
+      int wB = 0;
+      for (int t = 0; t < 256; t++) {
+        wB += hist[t];
+        if (wB == 0) continue;
+        final wF = pixels - wB;
+        if (wF == 0) break;
+        sumB += t * hist[t];
+        final mB = sumB / wB;
+        final mF = (sumAll - sumB) / wF;
+        final variance = wB.toDouble() * wF * (mB - mF) * (mB - mF);
+        if (variance > maxVar) {
+          maxVar = variance;
+          threshold = t;
+        }
+      }
+      // Binarize: text pixels → 0 (black), background → 255 (white)
+      final binary = Uint8List(pixels);
+      for (int i = 0; i < pixels; i++) {
+        binary[i] = stretched[i] <= threshold ? 0 : 255;
+      }
+
+      // ── Step 4: Unsharp mask on binary ────────────────────────────────────
+      const amount = 1.5;
+      final sharp = Uint8List(pixels);
+      for (int y = 0; y < h; y++) {
+        for (int x = 0; x < w; x++) {
+          int sum = 0, count = 0;
+          for (int dy = -1; dy <= 1; dy++) {
+            for (int dx = -1; dx <= 1; dx++) {
+              final ny = y + dy, nx = x + dx;
+              if (ny >= 0 && ny < h && nx >= 0 && nx < w) {
+                sum += binary[ny * w + nx];
+                count++;
+              }
+            }
+          }
+          final blur = sum / count;
+          final val = binary[y * w + x] + amount * (binary[y * w + x] - blur);
+          sharp[y * w + x] = val.round().clamp(0, 255);
+        }
+      }
+
+      // Convert grayscale back to RGBA for encoding
+      final rgba = Uint8List(pixels * 4);
+      for (int i = 0; i < pixels; i++) {
+        rgba[i * 4] = sharp[i];
+        rgba[i * 4 + 1] = sharp[i];
+        rgba[i * 4 + 2] = sharp[i];
+        rgba[i * 4 + 3] = 255;
+      }
+
+      final completer = Completer<ui.Image>();
+      ui.decodeImageFromPixels(
+          rgba, w, h, ui.PixelFormat.rgba8888, completer.complete);
+      final enhanced = await completer.future;
+      final pngData = await enhanced.toByteData(format: ui.ImageByteFormat.png);
+      enhanced.dispose();
+      if (pngData == null) return imageBytes;
+      return pngData.buffer.asUint8List();
+    } catch (_) {
+      return imageBytes; // fail open
+    }
+  }
 
   /// Corrects image orientation based on EXIF data.
   /// Returns the image bytes with correct upright orientation.

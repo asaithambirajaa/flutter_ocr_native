@@ -1,5 +1,6 @@
 import '../models/ocr_exception.dart';
 import '../models/ocr_result.dart';
+import '../validators/document_number_validator.dart';
 import '../validators/document_type_detector.dart';
 
 /// Controls how handwriting detection behaves for a document type.
@@ -28,14 +29,15 @@ class OcrValidator {
   /// Internal — used by [validate] automatically.
   static HandwritingPolicy _policyFor(DetectedDocType type) {
     switch (type) {
+      case DetectedDocType.voterId: // old laminated format always has typewritten fields
+        return HandwritingPolicy.skip;
       case DetectedDocType.passport:
       case DetectedDocType.cheque:
       case DetectedDocType.drivingLicense:
+      case DetectedDocType.unknown: // can't be certain — use lenient check
         return HandwritingPolicy.allowMixed;
       case DetectedDocType.aadhaar:
       case DetectedDocType.pan:
-      case DetectedDocType.voterId:
-      case DetectedDocType.unknown:
         return HandwritingPolicy.rejectIfHandwritten;
     }
   }
@@ -111,6 +113,22 @@ class OcrValidator {
             !upper.contains('TRANSPORT') &&
             !upper.contains('RTO') &&
             !RegExp(r'[A-Z]{2}\d{13,14}').hasMatch(upper);
+
+      case DetectedDocType.voterId:
+        // Old laminated Voter IDs have typewritten/handwritten personal fields.
+        // Only reject if none of the ECI printed keywords are present at all.
+        return !upper.contains('ELECTION') &&
+            !upper.contains('ELECTORAL') &&
+            !upper.contains('VOTER') &&
+            !upper.contains('EPIC') &&
+            !upper.contains('COMMISSION') &&
+            !upper.contains('ELECTOR') &&
+            !upper.contains('IDENTITY') &&
+            DocumentNumberValidator.extractVoterId(upper) == null;
+
+      case DetectedDocType.unknown:
+        // Can't identify the document — only reject if it has almost no text at all
+        return false;
 
       default:
         return true;

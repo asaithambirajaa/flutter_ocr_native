@@ -67,7 +67,8 @@ class _CompromisedDeviceScreen extends StatelessWidget {
                   'this application cannot be used on compromised devices.\n\n'
                   'Please use a secure, unmodified device.',
                   textAlign: TextAlign.center,
-                  style: TextStyle(color: Colors.white70, fontSize: 15, height: 1.5),
+                  style: TextStyle(
+                      color: Colors.white70, fontSize: 15, height: 1.5),
                 ),
                 const SizedBox(height: 32),
                 OutlinedButton.icon(
@@ -139,7 +140,17 @@ class _OcrHomePageState extends State<OcrHomePage> {
   Future<void> _pickFromFileBrowser() async {
     final result = await FilePicker.platform.pickFiles(
       type: FileType.custom,
-      allowedExtensions: ['jpg', 'jpeg', 'png', 'webp', 'bmp', 'gif', 'heic', 'tiff', 'pdf'],
+      allowedExtensions: [
+        'jpg',
+        'jpeg',
+        'png',
+        'webp',
+        'bmp',
+        'gif',
+        'heic',
+        'tiff',
+        'pdf'
+      ],
       allowMultiple: false,
     );
     if (result != null && result.files.single.path != null) {
@@ -159,7 +170,8 @@ class _OcrHomePageState extends State<OcrHomePage> {
     if (_isPdf(file)) {
       final rendered = await OcrDocumentSaver.renderPdfPage(rawBytes);
       if (rendered == null) {
-        setState(() => _error = 'Failed to render PDF. Platform may not support it.');
+        setState(() =>
+            _error = 'Failed to render PDF. Platform may not support it.');
         return;
       }
       imageBytes = rendered;
@@ -182,15 +194,21 @@ class _OcrHomePageState extends State<OcrHomePage> {
     if (croppedBytes == null) return;
 
     // ── Gap 3: Image quality gate ─────────────────────────────────────────
+    // Quality check: warn only — OcrReader auto-enhances + retries internally.
     final qualityError = OcrIntegrity.checkImageQuality(croppedBytes);
-    if (qualityError != null) {
-      setState(() => _error = qualityError);
-      return;
+    if (qualityError != null && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: const Text(
+            '⚠️ Low quality image — attempting OCR with enhancement…'),
+        backgroundColor: Colors.orange,
+        duration: const Duration(seconds: 3),
+      ));
     }
+    final Uint8List ocrBytes = croppedBytes;
 
     setState(() {
       _imageFile = file;
-      _processedBytes = croppedBytes;
+      _processedBytes = ocrBytes;
       _result = null;
       _details = null;
       _auditRecord = null;
@@ -201,44 +219,44 @@ class _OcrHomePageState extends State<OcrHomePage> {
     });
 
     try {
-      final result = await _reader.readFromBytes(croppedBytes);
+      // OcrReader._processWithFallback already enhanced + retried internally.
+      final ocrResult = await _reader.readFromBytes(ocrBytes);
 
-      // ── Gap 2: OCR confidence threshold ──────────────────────────────────
-      final confidences = result.blocks
+      List<double> confidencesOf(OcrResult r) => r.blocks
           .expand((b) => b.lines)
           .map((l) => l.confidence ?? 0.0)
           .toList();
-      final confidenceError = OcrIntegrity.checkConfidence(confidences);
-      if (confidenceError != null) {
-        setState(() {
-          _error = confidenceError;
-          _loading = false;
-        });
-        return;
-      }
+      // Confidence warning only — never block
+      final confidenceWarning = OcrIntegrity.checkConfidence(
+        confidencesOf(ocrResult),
+        threshold: OcrIntegrity.minConfidenceAfterEnhance,
+      );
 
       // Use unified DocumentDetails — handles all doc types + face extraction
       final details = await DocumentDetails.fromResult(
-        result,
-        imageBytes: croppedBytes,
+        ocrResult,
+        imageBytes: ocrBytes,
       );
 
       // ── Gap 1 & 6: Create audit record with unique scanId ─────────────────
       final auditRecord = OcrAuditRecord.create(
         details,
-        croppedBytes,
+        ocrBytes,
         // agentId: 'Raja',
         sessionId: DateTime.now().microsecondsSinceEpoch.toString(),
       );
 
       // ── Gap 4: Consistency + expiry checks ────────────────────────────────
-      final consistencyErrors = OcrIntegrity.consistencyErrors(details);
+      final consistencyErrors = [
+        ...OcrIntegrity.consistencyErrors(details),
+        if (confidenceWarning != null) confidenceWarning,
+      ];
 
       // ── Gap 5: Persist audit record ───────────────────────────────────────
       await OcrIntegrity.persistAuditRecord(auditRecord);
 
       setState(() {
-        _result = result;
+        _result = ocrResult;
         _details = details;
         _docType = details.docType;
         _auditRecord = auditRecord;
@@ -251,6 +269,8 @@ class _OcrHomePageState extends State<OcrHomePage> {
     } on HandwrittenTextException {
       setState(() => _error =
           'Handwritten text detected. Only printed documents are accepted');
+    } on LowQualityImageException catch (e) {
+      setState(() => _error = e.message);
     } catch (e) {
       setState(() => _error = e.toString());
     } finally {
@@ -289,10 +309,12 @@ class _OcrHomePageState extends State<OcrHomePage> {
   }
 
   Future<void> _saveImage() async {
-    if (_result == null || _processedBytes == null || _auditRecord == null) return;
+    if (_result == null || _processedBytes == null || _auditRecord == null)
+      return;
 
     // ── Re-verify before save ───────────────────────────────────────────────
-    final verification = OcrIntegrity.verify(_details!, _processedBytes!, _auditRecord!);
+    final verification =
+        OcrIntegrity.verify(_details!, _processedBytes!, _auditRecord!);
     if (!verification.passed) {
       await _handleTamper(verification);
       return;
@@ -411,118 +433,129 @@ class _OcrHomePageState extends State<OcrHomePage> {
       body: _sessionLocked
           ? _buildLockedScreen()
           : ListView(
-        padding: const EdgeInsets.all(16),
-        children: [
-          // Action buttons
-          _buildActionButtons(),
-          const SizedBox(height: 16),
+              padding: const EdgeInsets.all(16),
+              children: [
+                // Action buttons
+                _buildActionButtons(),
+                const SizedBox(height: 16),
 
-          // Image preview
-          if (hasResult && _result!.hasAadhaar)
-            GestureDetector(
-              onTap: _viewImage,
-              child: ClipRRect(
-                borderRadius: BorderRadius.circular(12),
-                child: Image.memory(_result!.maskedImageBytes!,
-                    height: 250, width: double.infinity, fit: BoxFit.contain),
-              ),
-            )
-          else if (_processedBytes != null)
-            GestureDetector(
-              onTap: hasResult ? _viewImage : null,
-              child: ClipRRect(
-                borderRadius: BorderRadius.circular(12),
-                child: Image.memory(_processedBytes!,
-                    height: 250, width: double.infinity, fit: BoxFit.contain),
-              ),
+                // Image preview
+                if (hasResult && _result!.hasAadhaar)
+                  GestureDetector(
+                    onTap: _viewImage,
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(12),
+                      child: Image.memory(_result!.maskedImageBytes!,
+                          height: 250,
+                          width: double.infinity,
+                          fit: BoxFit.contain),
+                    ),
+                  )
+                else if (_processedBytes != null)
+                  GestureDetector(
+                    onTap: hasResult ? _viewImage : null,
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(12),
+                      child: Image.memory(_processedBytes!,
+                          height: 250,
+                          width: double.infinity,
+                          fit: BoxFit.contain),
+                    ),
+                  ),
+
+                if (hasResult && !_loading) ...[
+                  const SizedBox(height: 12),
+                  if (_docType != DetectedDocType.unknown)
+                    Chip(
+                      avatar: Icon(_docTypeIcon(_docType), size: 18),
+                      label: Text('Detected: ${_docTypeLabel(_docType)}'),
+                      backgroundColor: Colors.indigo.shade50,
+                    ),
+                  const SizedBox(height: 8),
+                  Row(children: [
+                    Expanded(
+                        child: OutlinedButton.icon(
+                            onPressed: _viewImage,
+                            icon: const Icon(Icons.visibility),
+                            label: const Text('View'))),
+                    const SizedBox(width: 12),
+                    Expanded(
+                        child: OutlinedButton.icon(
+                            onPressed: _saveImage,
+                            icon: const Icon(Icons.save_alt),
+                            label: const Text('Download'))),
+                  ]),
+                ],
+
+                const SizedBox(height: 16),
+                if (_loading) const Center(child: CircularProgressIndicator()),
+                if (_error != null)
+                  Card(
+                    color: Theme.of(context).colorScheme.errorContainer,
+                    child: Padding(
+                        padding: const EdgeInsets.all(12),
+                        child: Text(_error!,
+                            style: TextStyle(
+                                color: Theme.of(context)
+                                    .colorScheme
+                                    .onErrorContainer))),
+                  ),
+
+                // Unified results display
+                if (hasResult) ...[
+                  // Face photo
+                  if (_details!.hasPhoto) _buildPhotoCard(),
+                  if (_details!.hasPhoto) const SizedBox(height: 12),
+                  // Details card
+                  _buildDetailsCard(),
+                  const SizedBox(height: 12),
+                  // Validation card
+                  _buildValidationCard(),
+                  const SizedBox(height: 12),
+                  // Integrity card
+                  _buildIntegrityCard(),
+                  const SizedBox(height: 12),
+                  // Raw text
+                  Card(
+                    child: Padding(
+                      padding: const EdgeInsets.all(12),
+                      child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(
+                              children: [
+                                Expanded(
+                                    child: Text('Raw OCR Text',
+                                        style: Theme.of(context)
+                                            .textTheme
+                                            .titleMedium)),
+                                IconButton(
+                                  icon: const Icon(Icons.copy, size: 18),
+                                  tooltip: 'Copy raw text',
+                                  onPressed: () {
+                                    Clipboard.setData(
+                                        ClipboardData(text: _result!.text));
+                                    ScaffoldMessenger.of(context).showSnackBar(
+                                      const SnackBar(
+                                          content: Text('Raw OCR text copied!'),
+                                          duration: Duration(seconds: 2)),
+                                    );
+                                  },
+                                ),
+                              ],
+                            ),
+                            const Divider(),
+                            SelectableText(
+                                _result!.text.isEmpty
+                                    ? 'No text found'
+                                    : _result!.text,
+                                style: Theme.of(context).textTheme.bodyMedium),
+                          ]),
+                    ),
+                  ),
+                ],
+              ],
             ),
-
-          if (hasResult && !_loading) ...[
-            const SizedBox(height: 12),
-            if (_docType != DetectedDocType.unknown)
-              Chip(
-                avatar: Icon(_docTypeIcon(_docType), size: 18),
-                label: Text('Detected: ${_docTypeLabel(_docType)}'),
-                backgroundColor: Colors.indigo.shade50,
-              ),
-            const SizedBox(height: 8),
-            Row(children: [
-              Expanded(
-                  child: OutlinedButton.icon(
-                      onPressed: _viewImage,
-                      icon: const Icon(Icons.visibility),
-                      label: const Text('View'))),
-              const SizedBox(width: 12),
-              Expanded(
-                  child: OutlinedButton.icon(
-                      onPressed: _saveImage,
-                      icon: const Icon(Icons.save_alt),
-                      label: const Text('Download'))),
-            ]),
-          ],
-
-          const SizedBox(height: 16),
-          if (_loading) const Center(child: CircularProgressIndicator()),
-          if (_error != null)
-            Card(
-              color: Theme.of(context).colorScheme.errorContainer,
-              child: Padding(
-                  padding: const EdgeInsets.all(12),
-                  child: Text(_error!,
-                      style: TextStyle(
-                          color:
-                              Theme.of(context).colorScheme.onErrorContainer))),
-            ),
-
-          // Unified results display
-          if (hasResult) ...[
-            // Face photo
-            if (_details!.hasPhoto) _buildPhotoCard(),
-            if (_details!.hasPhoto) const SizedBox(height: 12),
-            // Details card
-            _buildDetailsCard(),
-            const SizedBox(height: 12),
-            // Validation card
-            _buildValidationCard(),
-            const SizedBox(height: 12),
-            // Integrity card
-            _buildIntegrityCard(),
-            const SizedBox(height: 12),
-            // Raw text
-            Card(
-              child: Padding(
-                padding: const EdgeInsets.all(12),
-                child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Row(
-                        children: [
-                          Expanded(child: Text('Raw OCR Text',
-                              style: Theme.of(context).textTheme.titleMedium)),
-                          IconButton(
-                            icon: const Icon(Icons.copy, size: 18),
-                            tooltip: 'Copy raw text',
-                            onPressed: () {
-                              Clipboard.setData(ClipboardData(text: _result!.text));
-                              ScaffoldMessenger.of(context).showSnackBar(
-                                const SnackBar(content: Text('Raw OCR text copied!'), duration: Duration(seconds: 2)),
-                              );
-                            },
-                          ),
-                        ],
-                      ),
-                      const Divider(),
-                      SelectableText(
-                          _result!.text.isEmpty
-                              ? 'No text found'
-                              : _result!.text,
-                          style: Theme.of(context).textTheme.bodyMedium),
-                    ]),
-              ),
-            ),
-          ],
-        ],
-      ),
     );
   }
 
@@ -696,13 +729,17 @@ class _OcrHomePageState extends State<OcrHomePage> {
           children: [
             Row(children: [
               Icon(
-                hasConsistencyIssues ? Icons.warning_amber : Icons.verified_user,
+                hasConsistencyIssues
+                    ? Icons.warning_amber
+                    : Icons.verified_user,
                 color: hasConsistencyIssues ? Colors.orange : Colors.blue,
                 size: 20,
               ),
               const SizedBox(width: 8),
               Text(
-                hasConsistencyIssues ? 'Integrity: Warnings' : 'Integrity: Verified',
+                hasConsistencyIssues
+                    ? 'Integrity: Warnings'
+                    : 'Integrity: Verified',
                 style: Theme.of(context).textTheme.titleSmall,
               ),
             ]),
@@ -728,7 +765,6 @@ class _OcrHomePageState extends State<OcrHomePage> {
                 ),
               ),
             ],
-
           ],
         ),
       ),
@@ -737,31 +773,52 @@ class _OcrHomePageState extends State<OcrHomePage> {
 
   Widget _buildActionButtons() {
     if (isMobile) {
-      return Row(children: [
-        Expanded(
-            child: FilledButton.icon(
-                onPressed: _loading ? null : _pickFromCamera,
-                icon: const Icon(Icons.camera_alt),
-                label: const Text('Camera'))),
-        const SizedBox(width: 12),
-        Expanded(
-            child: FilledButton.tonalIcon(
-                onPressed: _loading ? null : _pickFromGallery,
-                icon: const Icon(Icons.photo_library),
-                label: const Text('Gallery'))),
+      return Column(children: [
+        Row(children: [
+          Expanded(
+              child: FilledButton.icon(
+                  onPressed: _loading ? null : _pickFromCamera,
+                  icon: const Icon(Icons.camera_alt),
+                  label: const Text('Camera'))),
+          const SizedBox(width: 12),
+          Expanded(
+              child: FilledButton.tonalIcon(
+                  onPressed: _loading ? null : _pickFromGallery,
+                  icon: const Icon(Icons.photo_library),
+                  label: const Text('Gallery'))),
+        ]),
+        const SizedBox(height: 8),
+        OutlinedButton.icon(
+          onPressed: () => Navigator.push(context,
+              MaterialPageRoute(builder: (_) => const _GenericOcrPage())),
+          icon: const Icon(Icons.text_fields),
+          label: const Text('Generic Label-Value OCR'),
+        ),
       ]);
     }
-    return Row(children: [
-      Expanded(
-          child: FilledButton.icon(
-              onPressed: _loading ? null : _pickFromFileBrowser,
-              icon: const Icon(Icons.folder_open),
-              label: const Text('Open Image File'))),
-      if (_imageFile != null) ...[
-        const SizedBox(width: 12),
-        Text(_imageFile!.path.split(Platform.pathSeparator).last,
-            style: Theme.of(context).textTheme.bodySmall)
-      ],
+    return Column(children: [
+      Row(children: [
+        Expanded(
+            child: FilledButton.icon(
+                onPressed: _loading ? null : _pickFromFileBrowser,
+                icon: const Icon(Icons.folder_open),
+                label: const Text('Open Image / PDF'))),
+        if (_imageFile != null) ...[
+          const SizedBox(width: 12),
+          Text(_imageFile!.path.split(Platform.pathSeparator).last,
+              style: Theme.of(context).textTheme.bodySmall)
+        ],
+      ]),
+      const SizedBox(height: 8),
+      SizedBox(
+        width: double.infinity,
+        child: OutlinedButton.icon(
+          onPressed: () => Navigator.push(context,
+              MaterialPageRoute(builder: (_) => const _GenericOcrPage())),
+          icon: const Icon(Icons.text_fields),
+          label: const Text('Generic Label-Value OCR'),
+        ),
+      ),
     ]);
   }
 
@@ -849,8 +906,9 @@ class _EditableDetailRowState extends State<_EditableDetailRow> {
                   },
                   onTapOutside: (_) {
                     setState(() => _editing = false);
-                    if (_ctrl.text != widget.value)
+                    if (_ctrl.text != widget.value) {
                       widget.onChanged(_ctrl.text);
+                    }
                   },
                 )
               : GestureDetector(
@@ -865,6 +923,229 @@ class _EditableDetailRowState extends State<_EditableDetailRow> {
                 ),
         ),
       ]),
+    );
+  }
+}
+
+// ── Generic Label-Value OCR Page ─────────────────────────────────────────────
+
+/// Uploads any PDF or image, runs OCR, parses every `Label: Value` /
+/// `Label - Value` / `Label = Value` line, and shows them as editable fields.
+class _GenericOcrPage extends StatefulWidget {
+  const _GenericOcrPage();
+
+  @override
+  State<_GenericOcrPage> createState() => _GenericOcrPageState();
+}
+
+class _GenericOcrPageState extends State<_GenericOcrPage> {
+  final _reader = OcrReader(validateDocument: false);
+  bool _loading = false;
+  String? _error;
+  String _rawText = '';
+
+  /// Parsed label → TextEditingController
+  final Map<String, TextEditingController> _fields = {};
+
+  /// Lines that had no separator — shown as plain text below the fields
+  final List<String> _unparsed = [];
+
+  @override
+  void dispose() {
+    for (final c in _fields.values) c.dispose();
+    _reader.dispose();
+    super.dispose();
+  }
+
+  Future<void> _pick() async {
+    final result = await FilePicker.platform.pickFiles(
+      type: FileType.custom,
+      allowedExtensions: ['jpg', 'jpeg', 'png', 'webp', 'bmp', 'pdf'],
+      allowMultiple: false,
+    );
+    if (result == null || result.files.single.path == null) return;
+    _process(File(result.files.single.path!));
+  }
+
+  Future<void> _pickMobile(ImageSource src) async {
+    final picked = await ImagePicker().pickImage(source: src);
+    if (picked != null) _process(File(picked.path));
+  }
+
+  Future<void> _process(File file) async {
+    setState(() {
+      _loading = true;
+      _error = null;
+      _rawText = '';
+      for (final c in _fields.values) {
+        c.dispose();
+      }
+      _fields.clear();
+      _unparsed.clear();
+    });
+
+    try {
+      final rawBytes = await file.readAsBytes();
+      final Uint8List imageBytes;
+
+      if (file.path.toLowerCase().endsWith('.pdf')) {
+        final rendered = await OcrDocumentSaver.renderPdfPage(rawBytes);
+        if (rendered == null) throw Exception('PDF render failed');
+        imageBytes = rendered;
+      } else {
+        imageBytes = rawBytes;
+      }
+
+      final corrected = await OcrDocumentSaver.correctOrientation(imageBytes);
+
+      // Image quality + blur gate — enhance then re-check
+      final qualityError = OcrIntegrity.checkImageQuality(corrected);
+      if (qualityError != null) throw LowQualityImageException(qualityError);
+      Uint8List ocrReady = corrected;
+      if (await OcrIntegrity.checkBlurriness(corrected) != null) {
+        ocrReady = await OcrDocumentSaver.enhanceForOcr(corrected);
+        final stillBlurry = await OcrIntegrity.checkBlurriness(ocrReady);
+        if (stillBlurry != null) throw LowQualityImageException(stillBlurry);
+      }
+
+      final ocrResult = await _reader.readFromBytes(ocrReady);
+      final text = ocrResult.text;
+
+      // Parse label-value pairs — separators: : - =
+      final sep = RegExp(r'^(.{2,50}?)\s*[:\-=]\s*(.+)$');
+      final newFields = <String, TextEditingController>{};
+      final unparsed = <String>[];
+
+      for (final line in text.split('\n')) {
+        final t = line.trim();
+        if (t.isEmpty) continue;
+        final m = sep.firstMatch(t);
+        if (m != null) {
+          final label = m.group(1)!.trim();
+          final value = m.group(2)!.trim();
+          // Skip lines where the "label" part looks like a number or is too short
+          if (label.length < 2 || RegExp(r'^\d+$').hasMatch(label)) {
+            unparsed.add(t);
+          } else {
+            // Deduplicate: append index if label already exists
+            var key = label;
+            var idx = 2;
+            while (newFields.containsKey(key)) key = '$label ($idx++)';
+            newFields[key] = TextEditingController(text: value);
+          }
+        } else {
+          unparsed.add(t);
+        }
+      }
+
+      setState(() {
+        _rawText = text;
+        _fields.addAll(newFields);
+        _unparsed.addAll(unparsed);
+      });
+    } on LowQualityImageException catch (e) {
+      setState(() => _error = e.message);
+    } catch (e) {
+      setState(() => _error = e.toString());
+    } finally {
+      setState(() => _loading = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Generic Label-Value OCR')),
+      body: ListView(
+        padding: const EdgeInsets.all(16),
+        children: [
+          // Pick buttons
+          if (isMobile)
+            Row(children: [
+              Expanded(
+                  child: FilledButton.icon(
+                      onPressed: _loading
+                          ? null
+                          : () => _pickMobile(ImageSource.camera),
+                      icon: const Icon(Icons.camera_alt),
+                      label: const Text('Camera'))),
+              const SizedBox(width: 12),
+              Expanded(
+                  child: FilledButton.tonalIcon(
+                      onPressed: _loading
+                          ? null
+                          : () => _pickMobile(ImageSource.gallery),
+                      icon: const Icon(Icons.photo_library),
+                      label: const Text('Gallery'))),
+            ])
+          else
+            FilledButton.icon(
+              onPressed: _loading ? null : _pick,
+              icon: const Icon(Icons.folder_open),
+              label: const Text('Open Image / PDF'),
+            ),
+
+          const SizedBox(height: 16),
+          if (_loading) const Center(child: CircularProgressIndicator()),
+
+          if (_error != null)
+            Card(
+              color: Theme.of(context).colorScheme.errorContainer,
+              child: Padding(
+                padding: const EdgeInsets.all(12),
+                child: Text(_error!,
+                    style: TextStyle(
+                        color: Theme.of(context).colorScheme.onErrorContainer)),
+              ),
+            ),
+
+          // Parsed fields
+          if (_fields.isNotEmpty) ...[
+            Text('Extracted Fields (${_fields.length})',
+                style: Theme.of(context).textTheme.titleMedium),
+            const SizedBox(height: 8),
+            ..._fields.entries.map((e) => Padding(
+                  padding: const EdgeInsets.only(bottom: 12),
+                  child: TextField(
+                    controller: e.value,
+                    decoration: InputDecoration(
+                      labelText: e.key,
+                      border: const OutlineInputBorder(),
+                      isDense: true,
+                    ),
+                  ),
+                )),
+          ],
+
+          // Unparsed lines
+          if (_unparsed.isNotEmpty) ...[
+            const SizedBox(height: 8),
+            ExpansionTile(
+              title: Text('Other lines (${_unparsed.length})',
+                  style: Theme.of(context).textTheme.titleSmall),
+              children: _unparsed
+                  .map((l) => ListTile(dense: true, title: Text(l)))
+                  .toList(),
+            ),
+          ],
+
+          // Raw OCR text
+          if (_rawText.isNotEmpty) ...[
+            const SizedBox(height: 8),
+            ExpansionTile(
+              title: Text('Raw OCR Text',
+                  style: Theme.of(context).textTheme.titleSmall),
+              children: [
+                Padding(
+                  padding: const EdgeInsets.all(12),
+                  child: SelectableText(_rawText,
+                      style: Theme.of(context).textTheme.bodySmall),
+                ),
+              ],
+            ),
+          ],
+        ],
+      ),
     );
   }
 }

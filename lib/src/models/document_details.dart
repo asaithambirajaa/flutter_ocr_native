@@ -89,16 +89,22 @@ class DocumentDetails {
   /// Synchronous parsing without face extraction.
   factory DocumentDetails.fromResultSync(OcrResult result, [DetectedDocType? type]) {
     final docType = type ?? DocumentTypeDetector.detect(result.text);
+    final DocumentDetails base;
     switch (docType) {
-      case DetectedDocType.aadhaar:      return _fromAadhaar(result);
-      case DetectedDocType.pan:          return _fromPan(result);
-      case DetectedDocType.passport:     return _fromPassport(result);
-      case DetectedDocType.drivingLicense: return _fromDL(result);
-      case DetectedDocType.voterId:      return _fromVoterId(result);
-      case DetectedDocType.cheque:       return _fromCheque(result);
+      case DetectedDocType.aadhaar:        base = _fromAadhaar(result); break;
+      case DetectedDocType.pan:            base = _fromPan(result); break;
+      case DetectedDocType.passport:       base = _fromPassport(result); break;
+      case DetectedDocType.drivingLicense: base = _fromDL(result); break;
+      case DetectedDocType.voterId:        base = _fromVoterId(result); break;
+      case DetectedDocType.cheque:         base = _fromCheque(result); break;
       case DetectedDocType.unknown:
-        return DocumentDetails(docType: DetectedDocType.unknown, rawText: result.text);
+        return _mergeFromLabelValueText(
+          DocumentDetails(docType: DetectedDocType.unknown, rawText: result.text),
+          result.text,
+        );
     }
+    // For known types, fill any still-null fields from label:value pairs in the text
+    return _mergeFromLabelValueText(base, result.text);
   }
 
   /// Parses directly from OCR text (no face extraction).
@@ -357,6 +363,88 @@ class DocumentDetails {
       return 'XXXX XXXX ${digits.substring(8)}';
     }
     return number;
+  }
+
+  // ── Label-value fallback parser ──────────────────────────────────────────
+
+  /// Parses `Label: Value`, `Label - Value`, `Label = Value` pairs from OCR text.
+  /// Returns a map of lowercased-trimmed label → trimmed value.
+  static Map<String, String> _parseLabelValuePairs(String text) {
+    final result = <String, String>{};
+    final sep = RegExp(r'^([^:\-=\n]{2,40}?)\s*[:\-=]\s*(.+)$');
+    for (final line in text.split('\n')) {
+      final trimmed = line.trim();
+      if (trimmed.isEmpty) continue;
+      final m = sep.firstMatch(trimmed);
+      if (m != null) {
+        final label = m.group(1)!.trim().toLowerCase();
+        final value = m.group(2)!.trim();
+        if (label.isNotEmpty && value.isNotEmpty) result[label] = value;
+      }
+    }
+    return result;
+  }
+
+  /// Fills null fields in [base] using label-value pairs parsed from [text].
+  /// Known label synonyms are mapped to structured fields; unknowns go to extraFields.
+  static DocumentDetails _mergeFromLabelValueText(DocumentDetails base, String text) {
+    final pairs = _parseLabelValuePairs(text);
+    if (pairs.isEmpty) return base;
+
+    String? resolve(List<String> keys) {
+      for (final k in keys) {
+        final v = pairs[k];
+        if (v != null && v.isNotEmpty) return v;
+      }
+      return null;
+    }
+
+    final docNum   = base.documentNumber ?? resolve(['document no', 'document no.', 'doc no', 'number', 'id', 'id no', 'id number', 'aadhaar', 'pan', 'passport no', 'dl no', 'epic no', 'account no', 'account number']);
+    final name     = base.name       ?? resolve(['name', 'full name', 'applicant name', 'holder name']);
+    final father   = base.fatherName ?? resolve(["father's name", 'father name', 'father', 'husband name', "husband's name", 'guardian name']);
+    final dob      = base.dob        ?? resolve(['dob', 'date of birth', 'birth date', 'd.o.b', 'd.o.b.']);
+    final gender   = base.gender     ?? resolve(['gender', 'sex']);
+    final address  = base.address    ?? resolve(['address', 'addr', 'permanent address', 'residential address']);
+
+    // Collect remaining pairs not mapped to core fields as extraFields
+    const coreKeys = {
+      'document no', 'document no.', 'doc no', 'number', 'id', 'id no', 'id number',
+      'aadhaar', 'pan', 'passport no', 'dl no', 'epic no', 'account no', 'account number',
+      'name', 'full name', 'applicant name', 'holder name',
+      "father's name", 'father name', 'father', 'husband name', "husband's name", 'guardian name',
+      'dob', 'date of birth', 'birth date', 'd.o.b', 'd.o.b.',
+      'gender', 'sex',
+      'address', 'addr', 'permanent address', 'residential address',
+    };
+    final extra = Map<String, String>.from(base.extraFields);
+    for (final entry in pairs.entries) {
+      if (!coreKeys.contains(entry.key) && !extra.containsKey(entry.key)) {
+        // Capitalise first letter of each word for display
+        final displayKey = entry.key.split(' ').map((w) => w.isEmpty ? w : '${w[0].toUpperCase()}${w.substring(1)}').join(' ');
+        extra.putIfAbsent(displayKey, () => entry.value);
+      }
+    }
+
+    if (docNum == base.documentNumber && name == base.name && father == base.fatherName &&
+        dob == base.dob && gender == base.gender && address == base.address &&
+        extra.length == base.extraFields.length) {
+      return base; // nothing changed
+    }
+
+    return DocumentDetails(
+      docType: base.docType,
+      documentNumber: docNum,
+      name: name,
+      fatherName: father,
+      dob: dob,
+      gender: gender,
+      address: address,
+      isValid: base.isValid,
+      validationError: base.validationError,
+      photoBytes: base.photoBytes,
+      extraFields: extra,
+      rawText: base.rawText,
+    );
   }
 
   /// Whether any meaningful data was extracted.

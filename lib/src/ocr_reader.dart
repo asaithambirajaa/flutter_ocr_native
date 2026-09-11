@@ -4,6 +4,7 @@ import 'dart:typed_data';
 import 'models/ocr_result.dart';
 import 'ocr_method_channel.dart';
 import 'ocr_platform_interface.dart';
+import 'security/ocr_integrity.dart';
 import 'utils/ocr_document_saver.dart';
 import 'validators/document_type_detector.dart';
 import 'validators/ocr_validator.dart';
@@ -27,27 +28,56 @@ class OcrReader {
   })  : _platform = OcrMethodChannel(),
         validator = validator ?? const OcrValidator();
 
-  Future<OcrResult> _process(Future<OcrResult> result, {DetectedDocType? docType}) async {
-    final r = await result;
-    if (validateDocument) validator.validate(r, docType: docType);
-    return maskAadhaar ? r.maskAadhaar() : r;
+  /// Runs OCR on [bytes]. If the result is empty or low-confidence,
+  /// automatically enhances the image (grayscale + Otsu binarization +
+  /// unsharp mask) and retries once — transparent to the caller.
+  Future<OcrResult> _processWithFallback(
+    Uint8List bytes, {
+    DetectedDocType? docType,
+  }) async {
+    final first = await _platform.recognizeFromBytes(bytes);
+
+    final confidences = first.blocks
+        .expand((b) => b.lines)
+        .map((l) => l.confidence ?? 0.0)
+        .toList();
+    final avg = confidences.isEmpty
+        ? 0.0
+        : confidences.reduce((a, b) => a + b) / confidences.length;
+
+    // Always enhance + retry when first pass is low-confidence or empty.
+    // Validation only runs AFTER we have the best possible result — never on
+    // the raw first pass — so a faded/laminated document gets a fair chance.
+    OcrResult best;
+    if (first.text.trim().isEmpty || avg < OcrIntegrity.minConfidence) {
+      final enhanced = await OcrDocumentSaver.enhanceForOcr(bytes);
+      final second = await _platform.recognizeFromBytes(enhanced);
+      best = second.text.length >= first.text.length ? second : first;
+    } else {
+      best = first;
+    }
+
+    if (validateDocument) validator.validate(best, docType: docType);
+    return maskAadhaar ? best.maskAadhaar() : best;
   }
 
   /// Recognize English text from an image file path.
-  /// Non-English text (Tamil, Hindi, etc.) is automatically filtered out.
+  /// Automatically enhances and retries if the first OCR pass is low-quality.
   /// [docType] — hint the document type to apply correct handwriting policy.
   Future<OcrResult> readFromPath(String imagePath, {DetectedDocType? docType}) async {
     if (!await File(imagePath).exists()) {
       throw ArgumentError('File not found: $imagePath');
     }
-    return _process(_platform.recognizeFromPath(imagePath), docType: docType);
+    final bytes = await File(imagePath).readAsBytes();
+    return _processWithFallback(bytes, docType: docType);
   }
 
   /// Recognize English text from raw image bytes.
+  /// Automatically enhances and retries if the first OCR pass is low-quality.
   /// [docType] — hint the document type to apply correct handwriting policy.
   Future<OcrResult> readFromBytes(Uint8List bytes, {DetectedDocType? docType}) {
     if (bytes.isEmpty) throw ArgumentError('Image bytes cannot be empty');
-    return _process(_platform.recognizeFromBytes(bytes), docType: docType);
+    return _processWithFallback(bytes, docType: docType);
   }
 
   /// Recognize English text from a [File].

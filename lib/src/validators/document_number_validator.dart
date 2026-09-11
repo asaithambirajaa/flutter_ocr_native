@@ -180,7 +180,22 @@ class DocumentNumberValidator {
   static String? extractVoterId(String text) {
     if (text.isEmpty) return null;
 
-    final upper = text.toUpperCase();
+    // Normalize common OCR noise characters that corrupt the EPIC pattern:
+    // '|' (pipe), '!' (exclamation) appearing before 2 letters + digits are
+    // stripped so the missing-first-letter strategies below recover the correct
+    // letter by trying all valid state prefixes.
+    // '1' before 2 uppercase letters is also stripped (digit-one misread as letter).
+    final normalized = text
+        .replaceAllMapped(
+          RegExp(r'[|!](?=[A-Za-z]{2}\d{6,7})'),
+          (_) => '',
+        )
+        .replaceAllMapped(
+          RegExp(r'(?<![A-Z0-9a-z])1(?=[A-Za-z]{2}\d{6,7})'),
+          (_) => '',
+        );
+
+    final upper = normalized.toUpperCase();
 
     // Remove common punctuation but keep spaces and newlines for structure
     final cleaned = upper.replaceAll(RegExp(r'[^A-Z0-9\s\n]'), ' ');
@@ -204,29 +219,8 @@ class DocumentNumberValidator {
 
     for (final match in missingFirstMatches) {
       final partial = match.group(1)!;
-      // Try common first letters for Indian states
-      final commonFirstLetters = [
-        'A',
-        'B',
-        'C',
-        'D',
-        'G',
-        'H',
-        'I',
-        'J',
-        'K',
-        'L',
-        'M',
-        'N',
-        'P',
-        'R',
-        'S',
-        'T',
-        'U',
-        'W'
-      ];
-
-      for (final firstLetter in commonFirstLetters) {
+      // Try all valid state-code first letters, most common first
+      for (final firstLetter in ['I','A','B','C','D','G','H','J','K','L','M','N','P','R','S','T','U','V','W','X','Y','Z']) {
         final candidate = '$firstLetter$partial';
         if (_isValidEpicCandidate(candidate)) {
           return candidate;
@@ -251,28 +245,7 @@ class DocumentNumberValidator {
     if (spacedMissingFirstMatch != null) {
       final partial =
           '${spacedMissingFirstMatch.group(1)}${spacedMissingFirstMatch.group(2)}';
-      final commonFirstLetters = [
-        'A',
-        'B',
-        'C',
-        'D',
-        'G',
-        'H',
-        'I',
-        'J',
-        'K',
-        'L',
-        'M',
-        'N',
-        'P',
-        'R',
-        'S',
-        'T',
-        'U',
-        'W'
-      ];
-
-      for (final firstLetter in commonFirstLetters) {
+      for (final firstLetter in ['I','A','B','C','D','G','H','J','K','L','M','N','P','R','S','T','U','V','W','X','Y','Z']) {
         final candidate = '$firstLetter$partial';
         if (_isValidEpicCandidate(candidate)) {
           return candidate;
@@ -299,28 +272,7 @@ class DocumentNumberValidator {
 
     for (final match in permissiveMissingFirstMatches) {
       final partial = '${match.group(1)}${match.group(2)}';
-      final commonFirstLetters = [
-        'I',
-        'A',
-        'B',
-        'C',
-        'D',
-        'G',
-        'H',
-        'J',
-        'K',
-        'L',
-        'M',
-        'N',
-        'P',
-        'R',
-        'S',
-        'T',
-        'U',
-        'W'
-      ];
-
-      for (final firstLetter in commonFirstLetters) {
+      for (final firstLetter in ['I','A','B','C','D','G','H','J','K','L','M','N','P','R','S','T','U','V','W','X','Y','Z']) {
         final candidate = '$firstLetter$partial';
         if (_isValidEpicCandidate(candidate)) {
           return candidate;

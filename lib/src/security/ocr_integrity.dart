@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
+import 'dart:ui' as ui;
 
 import 'package:crypto/crypto.dart';
 import 'package:path_provider/path_provider.dart';
@@ -17,7 +18,16 @@ class OcrIntegrity {
   static const int minImageBytes = 50 * 1024; // 50 KB
 
   /// Minimum average OCR confidence (0.0–1.0) to accept a result.
-  static const double minConfidence = 0.75;
+  /// 0.55 is realistic for real-world document scans with moderate lighting.
+  static const double minConfidence = 0.55;
+
+  /// Fallback confidence threshold after image enhancement.
+  /// If enhanced OCR still beats this, the result is accepted.
+  static const double minConfidenceAfterEnhance = 0.45;
+
+  /// Minimum Laplacian variance — below this the image is considered blurry.
+  /// Tune: clear document scan ≈ 200–800+; blurry phone photo ≈ 10–80.
+  static const double minSharpnessVariance = 80.0;
 
   // ── Device security ───────────────────────────────────────────────────────────
 
@@ -82,15 +92,78 @@ class OcrIntegrity {
     return null;
   }
 
-  /// Returns an error string if average OCR confidence is below [minConfidence].
+  /// Checks image sharpness using Laplacian variance on a downsampled grayscale.
+  /// Returns an error string if the image is too blurry, null if it passes.
+  ///
+  /// Works on any image format supported by [dart:ui] (JPEG, PNG, WEBP, BMP).
+  /// Samples a centre 200×200 region to keep it fast on large images.
+  static Future<String?> checkBlurriness(Uint8List imageBytes) async {
+    try {
+      final codec = await ui.instantiateImageCodec(
+        imageBytes,
+        targetWidth: 200,
+        targetHeight: 200,
+      );
+      final frame = await codec.getNextFrame();
+      final byteData =
+          await frame.image.toByteData(format: ui.ImageByteFormat.rawRgba);
+      frame.image.dispose();
+      if (byteData == null) return null;
+
+      final pixels = byteData.buffer.asUint8List();
+      final w = 200, h = 200;
+
+      // Convert to grayscale
+      final gray = List<int>.generate(w * h, (i) {
+        final r = pixels[i * 4];
+        final g = pixels[i * 4 + 1];
+        final b = pixels[i * 4 + 2];
+        return (0.299 * r + 0.587 * g + 0.114 * b).round();
+      });
+
+      // Laplacian kernel: sum of |4*center - left - right - top - bottom|
+      double sum = 0, sumSq = 0;
+      int count = 0;
+      for (int y = 1; y < h - 1; y++) {
+        for (int x = 1; x < w - 1; x++) {
+          final lap = (4 * gray[y * w + x] -
+                  gray[(y - 1) * w + x] -
+                  gray[(y + 1) * w + x] -
+                  gray[y * w + (x - 1)] -
+                  gray[y * w + (x + 1)])
+              .abs()
+              .toDouble();
+          sum += lap;
+          sumSq += lap * lap;
+          count++;
+        }
+      }
+      final mean = sum / count;
+      final variance = (sumSq / count) - (mean * mean);
+
+      if (variance < minSharpnessVariance) {
+        final pct = ((variance / minSharpnessVariance) * 100).toStringAsFixed(0);
+        return 'Image is too blurry (clarity $pct%). '
+            'Please retake with better focus and lighting.';
+      }
+      return null;
+    } catch (_) {
+      return null; // fail open — don't block on decode error
+    }
+  }
+
+  /// Returns an error string if average OCR confidence is below [threshold].
   /// Pass [lineConfidences] from result.blocks → lines → confidence.
   /// Returns null if confidence is acceptable.
-  static String? checkConfidence(List<double> lineConfidences) {
+  static String? checkConfidence(
+    List<double> lineConfidences, {
+    double threshold = minConfidence,
+  }) {
     if (lineConfidences.isEmpty) return null;
     final avg = lineConfidences.reduce((a, b) => a + b) / lineConfidences.length;
-    if (avg < minConfidence) {
+    if (avg < threshold) {
       return 'OCR confidence too low (${(avg * 100).toStringAsFixed(0)}%). '
-          'Retake the image with better lighting.';
+          'Image quality is insufficient — please retake with better lighting.';
     }
     return null;
   }
